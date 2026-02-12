@@ -19,6 +19,7 @@ const roundLimitInput = document.getElementById('round-limit');
 const startBtn = document.getElementById('start-btn');
 const stopBtn = document.getElementById('stop-btn');
 const exportBtn = document.getElementById('export-btn');
+const retryBtn = document.getElementById('retry-btn');
 const newDebateBtn = document.getElementById('new-debate-btn');
 const statusText = document.getElementById('status-text');
 const roundCounter = document.getElementById('round-counter');
@@ -26,10 +27,18 @@ const statusPill = document.getElementById('status-pill');
 const toggleTranscript = document.getElementById('toggle-transcript');
 const transcriptPanel = document.getElementById('transcript-panel');
 const transcriptContent = document.getElementById('transcript-content');
-const leftModelSelect = document.getElementById('left-model-select');
-const rightModelSelect = document.getElementById('right-model-select');
-const leftModelLoading = document.getElementById('left-model-loading');
-const rightModelLoading = document.getElementById('right-model-loading');
+const configureModelsCheck = document.getElementById('configure-models-check');
+const configureBar = document.getElementById('configure-bar');
+const configureStartBtn = document.getElementById('configure-start-btn');
+const modeCardsContainer = document.getElementById('mode-cards');
+const leftPersonalityInput = document.getElementById('left-personality-input');
+const rightPersonalityInput = document.getElementById('right-personality-input');
+const startBtnText = document.getElementById('start-btn-text');
+const settingInput = document.getElementById('setting-input');
+
+// --- Mode & Personality State ---
+
+let currentMode = 'debate';
 
 // --- Debate Data (for PDF export) ---
 
@@ -39,6 +48,7 @@ let debateData = {
   rightLLM: '',
   roundLimit: null,
   startTime: null,
+  mode: 'debate',
   turns: [],
 };
 
@@ -62,39 +72,54 @@ function updatePaneLabels() {
   const leftConfig = LLM_CONFIG[leftSelect.value];
   const rightConfig = LLM_CONFIG[rightSelect.value];
   if (leftConfig) {
-    const leftModel = leftModelSelect.value
-      ? leftModelSelect.options[leftModelSelect.selectedIndex]?.text
-      : '';
-    const label = leftModel ? `${leftConfig.name} (${leftModel})` : leftConfig.name;
-    leftLabel.textContent = label;
-    headerLeftName.textContent = label;
+    leftLabel.textContent = leftConfig.name;
+    headerLeftName.textContent = leftConfig.name;
   }
   if (rightConfig) {
-    const rightModel = rightModelSelect.value
-      ? rightModelSelect.options[rightModelSelect.selectedIndex]?.text
-      : '';
-    const label = rightModel ? `${rightConfig.name} (${rightModel})` : rightConfig.name;
-    rightLabel.textContent = label;
-    headerRightName.textContent = label;
+    rightLabel.textContent = rightConfig.name;
+    headerRightName.textContent = rightConfig.name;
   }
 }
 
 leftSelect.addEventListener('change', () => {
   updatePaneLabels();
-  preloadIframes();
+  if (document.body.classList.contains('debate-active')) loadIframes();
 });
 rightSelect.addEventListener('change', () => {
   updatePaneLabels();
-  preloadIframes();
+  if (document.body.classList.contains('debate-active')) loadIframes();
 });
-leftModelSelect.addEventListener('change', updatePaneLabels);
-rightModelSelect.addEventListener('change', updatePaneLabels);
 updatePaneLabels();
+
+// --- Mode Cards ---
+
+function renderModeCards() {
+  modeCardsContainer.innerHTML = '';
+  for (const [key, mode] of Object.entries(INTERACTION_MODES)) {
+    const btn = document.createElement('button');
+    btn.className = 'mode-card' + (key === currentMode ? ' active' : '');
+    btn.dataset.mode = key;
+    btn.innerHTML = '<span class="mode-card-icon">' + mode.icon + '</span>'
+      + '<span class="mode-card-label">' + mode.label + '</span>'
+      + '<span class="mode-card-desc">' + mode.description + '</span>';
+    btn.addEventListener('click', () => {
+      currentMode = key;
+      modeCardsContainer.querySelectorAll('.mode-card').forEach(c => c.classList.remove('active'));
+      btn.classList.add('active');
+      topicInput.placeholder = mode.topicPlaceholder;
+      startBtnText.textContent = mode.buttonLabel;
+    });
+    modeCardsContainer.appendChild(btn);
+  }
+}
+
+renderModeCards();
 
 // --- Transitions ---
 
 function transitionToDebate() {
-  // Iframes already loaded during preload — just transition the UI
+  // Load iframes now (not before) so LLM sites don't load on the landing page
+  loadIframes();
   updatePaneLabels();
   document.body.classList.add('debate-active');
 }
@@ -109,12 +134,21 @@ function transitionToLanding() {
   stopBtn.style.display = '';
   newDebateBtn.style.display = 'none';
   exportBtn.disabled = true;
+  configureBar.classList.add('hidden');
+  leftPersonalityInput.value = '';
+  rightPersonalityInput.value = '';
+  settingInput.value = '';
 
-  // Re-preload for fresh state
-  setTimeout(preloadIframes, 500);
+  // Reset mode to default
+  currentMode = 'debate';
+  renderModeCards();
+  topicInput.placeholder = INTERACTION_MODES.debate.topicPlaceholder;
+  startBtnText.textContent = INTERACTION_MODES.debate.buttonLabel;
+
+  // Iframes stay at about:blank — they'll reload when the next debate starts
 }
 
-// --- Iframe Loading & Model Preloading ---
+// --- Iframe Loading ---
 
 function loadIframe(iframe, llmKey) {
   const config = LLM_CONFIG[llmKey];
@@ -123,79 +157,9 @@ function loadIframe(iframe, llmKey) {
   }
 }
 
-let leftModelTimeout = null;
-let rightModelTimeout = null;
-
-function resetModelSelect(selectEl, loadingEl) {
-  selectEl.innerHTML = '<option value="">Default Model</option>';
-  selectEl.disabled = true;
-  selectEl.classList.remove('hidden');
-  loadingEl.classList.add('visible');
-}
-
-function preloadIframes() {
-  const leftLLM = leftSelect.value;
-  const rightLLM = rightSelect.value;
-
-  // Reset model selectors
-  resetModelSelect(leftModelSelect, leftModelLoading);
-  resetModelSelect(rightModelSelect, rightModelLoading);
-
-  // Load iframes behind the landing overlay
-  loadIframe(leftIframe, leftLLM);
-  loadIframe(rightIframe, rightLLM);
-
-  // Tell service worker to discover frames and fetch models
-  if (port) {
-    port.postMessage({
-      type: MSG.PRELOAD_IFRAMES,
-      leftLLM,
-      rightLLM,
-    });
-  }
-
-  // Timeout: hide loading after 30s if no response
-  clearTimeout(leftModelTimeout);
-  clearTimeout(rightModelTimeout);
-  leftModelTimeout = setTimeout(() => {
-    leftModelLoading.classList.remove('visible');
-    leftModelSelect.classList.add('hidden');
-  }, 30000);
-  rightModelTimeout = setTimeout(() => {
-    rightModelLoading.classList.remove('visible');
-    rightModelSelect.classList.add('hidden');
-  }, 30000);
-}
-
-function handleModelsAvailable(msg) {
-  const { side, models, llmKey } = msg;
-  const currentLLM = side === 'left' ? leftSelect.value : rightSelect.value;
-
-  // Discard if user changed LLM since this fetch started
-  if (llmKey !== currentLLM) return;
-
-  const selectEl = side === 'left' ? leftModelSelect : rightModelSelect;
-  const loadingEl = side === 'left' ? leftModelLoading : rightModelLoading;
-  const timeoutId = side === 'left' ? leftModelTimeout : rightModelTimeout;
-
-  clearTimeout(timeoutId);
-  loadingEl.classList.remove('visible');
-
-  if (!models || models.length === 0) {
-    selectEl.classList.add('hidden');
-    return;
-  }
-
-  // Populate the dropdown
-  selectEl.innerHTML = '<option value="">Default Model</option>';
-  for (const model of models) {
-    const opt = document.createElement('option');
-    opt.value = model.id;
-    opt.textContent = model.name;
-    if (model.selected) opt.selected = true;
-    selectEl.appendChild(opt);
-  }
-  selectEl.disabled = false;
+function loadIframes() {
+  loadIframe(leftIframe, leftSelect.value);
+  loadIframe(rightIframe, rightSelect.value);
 }
 
 // --- Divider Drag Resize ---
@@ -254,6 +218,7 @@ function connectToServiceWorker() {
   port = chrome.runtime.connect({ name: 'arena' });
 
   port.onMessage.addListener((msg) => {
+    console.log('[Clash Arena] received from SW:', msg.type, msg);
     switch (msg.type) {
       case MSG.DEBATE_UPDATE:
         handleDebateUpdate(msg);
@@ -262,10 +227,8 @@ function connectToServiceWorker() {
         handleDebateComplete(msg);
         break;
       case MSG.DEBATE_ERROR:
+        console.error('[Clash Arena] DEBATE_ERROR:', msg.error);
         handleDebateError(msg);
-        break;
-      case MSG.MODELS_AVAILABLE:
-        handleModelsAvailable(msg);
         break;
     }
   });
@@ -277,10 +240,39 @@ function connectToServiceWorker() {
 
 connectToServiceWorker();
 
-// Preload iframes on initial page load
-preloadIframes();
+// Iframes are NOT loaded on the landing page — they load when the debate starts
 
 // --- Start Debate ---
+
+function beginDebate() {
+  const topic = debateData.topic;
+  const roundLimit = debateData.roundLimit;
+
+  statusText.textContent = 'Starting...';
+  statusPill.className = 'status-pill debating';
+  roundCounter.textContent = roundLimit ? `/ ${roundLimit}` : '';
+  transcriptContent.innerHTML = '';
+  transcriptTurnNum = 0;
+  exportBtn.disabled = true;
+  stopBtn.style.display = '';
+  retryBtn.style.display = 'none';
+  newDebateBtn.style.display = 'none';
+  configureBar.classList.add('hidden');
+
+  const startMsg = {
+    type: MSG.START_DEBATE,
+    topic,
+    roundLimit,
+    leftLLM: debateData.leftLLM,
+    rightLLM: debateData.rightLLM,
+    mode: debateData.mode,
+    leftPersonality: leftPersonalityInput.value.trim() || '',
+    rightPersonality: rightPersonalityInput.value.trim() || '',
+    setting: settingInput.value.trim() || '',
+  };
+  console.log('[Clash Arena] beginDebate sending:', JSON.stringify(startMsg, null, 2));
+  port.postMessage(startMsg);
+}
 
 startBtn.addEventListener('click', () => {
   const topic = topicInput.value.trim();
@@ -299,29 +291,31 @@ startBtn.addEventListener('click', () => {
     rightLLM: rightSelect.value,
     roundLimit,
     startTime: new Date(),
+    mode: currentMode,
     turns: [],
   };
 
   transitionToDebate();
 
-  statusText.textContent = 'Starting...';
-  statusPill.className = 'status-pill debating';
-  roundCounter.textContent = roundLimit ? `/ ${roundLimit}` : '';
-  transcriptContent.innerHTML = '';
-  transcriptTurnNum = 0;
-  exportBtn.disabled = true;
-  stopBtn.style.display = '';
-  newDebateBtn.style.display = 'none';
+  if (configureModelsCheck.checked) {
+    // Show configure bar — user sets models manually, then clicks Start
+    configureBar.classList.remove('hidden');
+  } else {
+    // Start debate immediately
+    beginDebate();
+  }
+});
 
-  port.postMessage({
-    type: MSG.START_DEBATE,
-    topic,
-    roundLimit,
-    leftLLM: leftSelect.value,
-    rightLLM: rightSelect.value,
-    leftModel: leftModelSelect.value || null,
-    rightModel: rightModelSelect.value || null,
-  });
+configureStartBtn.addEventListener('click', () => {
+  beginDebate();
+});
+
+retryBtn.addEventListener('click', () => {
+  retryBtn.style.display = 'none';
+  newDebateBtn.style.display = 'none';
+  // Reload iframes fresh and retry
+  loadIframes();
+  beginDebate();
 });
 
 // --- Stop Debate ---
@@ -372,19 +366,20 @@ function handleDebateUpdate(msg) {
     rightStatus.textContent = '';
     rightStatus.className = 'pane-status';
 
+    const modeConfig = INTERACTION_MODES[debateData.mode] || INTERACTION_MODES.debate;
     const leftTurnNum = debateData.turns.length + 1;
     debateData.turns.push({
       turn: leftTurnNum,
       round,
       speaker: msg.leftLLM,
-      position: 'FOR',
+      position: modeConfig.roles.left,
       text: leftResponse || '',
     });
     debateData.turns.push({
       turn: leftTurnNum + 1,
       round,
       speaker: msg.rightLLM,
-      position: 'AGAINST',
+      position: modeConfig.roles.right,
       text: rightResponse || '',
     });
 
@@ -401,6 +396,7 @@ function handleDebateComplete(msg) {
   rightStatus.className = 'pane-status';
   exportBtn.disabled = false;
   stopBtn.style.display = 'none';
+  retryBtn.style.display = 'none';
   newDebateBtn.style.display = '';
 }
 
@@ -412,6 +408,7 @@ function handleDebateError(msg) {
   rightStatus.textContent = '';
   rightStatus.className = 'pane-status';
   stopBtn.style.display = 'none';
+  retryBtn.style.display = '';
   newDebateBtn.style.display = '';
   if (debateData.turns.length > 0) {
     exportBtn.disabled = false;
@@ -428,6 +425,7 @@ function appendTranscriptRound(round, leftLLM, leftText, rightLLM, rightText) {
 
   const leftName = LLM_CONFIG[leftLLM]?.name || leftLLM;
   const rightName = LLM_CONFIG[rightLLM]?.name || rightLLM;
+  const modeConfig = INTERACTION_MODES[debateData.mode] || INTERACTION_MODES.debate;
 
   const leftTurn = ++transcriptTurnNum;
   const rightTurn = ++transcriptTurnNum;
@@ -435,11 +433,11 @@ function appendTranscriptRound(round, leftLLM, leftText, rightLLM, rightText) {
   roundDiv.innerHTML = `
     <div class="transcript-round-header">Round ${round}</div>
     <div class="transcript-entry">
-      <div class="transcript-speaker">Turn #${leftTurn} — ${leftName} (FOR)</div>
+      <div class="transcript-speaker">Turn #${leftTurn} — ${leftName} (${modeConfig.roles.left})</div>
       <div class="transcript-text">${escapeHtml(leftText || '...')}</div>
     </div>
     <div class="transcript-entry">
-      <div class="transcript-speaker">Turn #${rightTurn} — ${rightName} (AGAINST)</div>
+      <div class="transcript-speaker">Turn #${rightTurn} — ${rightName} (${modeConfig.roles.right})</div>
       <div class="transcript-text">${escapeHtml(rightText || '...')}</div>
     </div>
   `;
@@ -511,7 +509,8 @@ function exportToPDF() {
     doc.setFont('helvetica', 'bold');
     doc.setFontSize(9);
     doc.setTextColor(156, 163, 175);
-    doc.text('CLASH OF LLMS \u2014 DEBATE TRANSCRIPT', pageW / 2, y, { align: 'center' });
+    const modeLabel = (INTERACTION_MODES[debateData.mode] || INTERACTION_MODES.debate).label;
+    doc.text('CLASH OF LLMS \u2014 ' + modeLabel.toUpperCase() + ' TRANSCRIPT', pageW / 2, y, { align: 'center' });
     y += 30;
 
     doc.setFontSize(20);
@@ -529,6 +528,7 @@ function exportToPDF() {
     const [lr, lg, lb] = hexToRgb(leftConfig.color || '#888');
     const [rr, rg, rb] = hexToRgb(rightConfig.color || '#888');
 
+    const pdfModeConfig = INTERACTION_MODES[debateData.mode] || INTERACTION_MODES.debate;
     const matchupY = y;
 
     doc.setFont('helvetica', 'bold');
@@ -541,7 +541,7 @@ function exportToPDF() {
     doc.setFont('helvetica', 'normal');
     doc.setFontSize(9);
     doc.setTextColor(156, 163, 175);
-    doc.text('FOR', pageW / 2 - 108, matchupY + 13);
+    doc.text(pdfModeConfig.roles.left, pageW / 2 - 108, matchupY + 13);
 
     doc.setFont('helvetica', 'bold');
     doc.setFontSize(12);
@@ -557,7 +557,7 @@ function exportToPDF() {
     doc.setFont('helvetica', 'normal');
     doc.setFontSize(9);
     doc.setTextColor(156, 163, 175);
-    doc.text('AGAINST', pageW / 2 + 62, matchupY + 13);
+    doc.text(pdfModeConfig.roles.right, pageW / 2 + 62, matchupY + 13);
 
     y = matchupY + 32;
 

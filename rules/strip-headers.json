@@ -8,7 +8,10 @@
         { "header": "x-frame-options", "operation": "remove" },
         { "header": "content-security-policy", "operation": "remove" },
         { "header": "content-security-policy-report-only", "operation": "remove" },
-        { "header": "x-content-type-options", "operation": "remove" }
+        { "header": "x-content-type-options", "operation": "remove" },
+        { "header": "cross-origin-opener-policy", "operation": "remove" },
+        { "header": "cross-origin-embedder-policy", "operation": "remove" },
+        { "header": "cross-origin-resource-policy", "operation": "remove" }
       ]
     },
     "condition": {
@@ -25,7 +28,10 @@
         { "header": "x-frame-options", "operation": "remove" },
         { "header": "content-security-policy", "operation": "remove" },
         { "header": "content-security-policy-report-only", "operation": "remove" },
-        { "header": "x-content-type-options", "operation": "remove" }
+        { "header": "x-content-type-options", "operation": "remove" },
+        { "header": "cross-origin-opener-policy", "operation": "remove" },
+        { "header": "cross-origin-embedder-policy", "operation": "remove" },
+        { "header": "cross-origin-resource-policy", "operation": "remove" }
       ]
     },
     "condition": {
@@ -42,7 +48,10 @@
         { "header": "x-frame-options", "operation": "remove" },
         { "header": "content-security-policy", "operation": "remove" },
         { "header": "content-security-policy-report-only", "operation": "remove" },
-        { "header": "x-content-type-options", "operation": "remove" }
+        { "header": "x-content-type-options", "operation": "remove" },
+        { "header": "cross-origin-opener-policy", "operation": "remove" },
+        { "header": "cross-origin-embedder-policy", "operation": "remove" },
+        { "header": "cross-origin-resource-policy", "operation": "remove" }
       ]
     },
     "condition": {
@@ -59,7 +68,10 @@
         { "header": "x-frame-options", "operation": "remove" },
         { "header": "content-security-policy", "operation": "remove" },
         { "header": "content-security-policy-report-only", "operation": "remove" },
-        { "header": "x-content-type-options", "operation": "remove" }
+        { "header": "x-content-type-options", "operation": "remove" },
+        { "header": "cross-origin-opener-policy", "operation": "remove" },
+        { "header": "cross-origin-embedder-policy", "operation": "remove" },
+        { "header": "cross-origin-resource-policy", "operation": "remove" }
       ]
     },
     "condition": {
@@ -76,11 +88,34 @@
         { "header": "x-frame-options", "operation": "remove" },
         { "header": "content-security-policy", "operation": "remove" },
         { "header": "content-security-policy-report-only", "operation": "remove" },
-        { "header": "x-content-type-options", "operation": "remove" }
+        { "header": "x-content-type-options", "operation": "remove" },
+        { "header": "cross-origin-opener-policy", "operation": "remove" },
+        { "header": "cross-origin-embedder-policy", "operation": "remove" },
+        { "header": "cross-origin-resource-policy", "operation": "remove" }
       ]
     },
     "condition": {
       "urlFilter": "||perplexity.ai",
+      "resourceTypes": ["sub_frame", "xmlhttprequest", "script", "stylesheet", "image", "font", "other"]
+    }
+  },
+  {
+    "id": 6,
+    "priority": 1,
+    "action": {
+      "type": "modifyHeaders",
+      "responseHeaders": [
+        { "header": "x-frame-options", "operation": "remove" },
+        { "header": "content-security-policy", "operation": "remove" },
+        { "header": "content-security-policy-report-only", "operation": "remove" },
+        { "header": "x-content-type-options", "operation": "remove" },
+        { "header": "cross-origin-opener-policy", "operation": "remove" },
+        { "header": "cross-origin-embedder-policy", "operation": "remove" },
+        { "header": "cross-origin-resource-policy", "operation": "remove" }
+      ]
+    },
+    "condition": {
+      "urlFilter": "||accounts.google.com",
       "resourceTypes": ["sub_frame", "xmlhttprequest", "script", "stylesheet", "image", "font", "other"]
     }
   }

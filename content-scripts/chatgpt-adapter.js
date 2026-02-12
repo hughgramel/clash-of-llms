@@ -28,16 +28,6 @@
       'div.agent-turn .markdown',
       'article[data-testid*="conversation"] div[class*="markdown"]',
     ],
-    modelSelectorButton: [
-      'button[data-testid="model-switcher-dropdown-button"]',
-      'button[aria-label*="Model selector" i]',
-      'button[aria-label*="model" i][aria-haspopup="menu"]',
-    ],
-    modelDropdownOption: [
-      '[role="menuitemradio"]',
-      '[role="option"]',
-      '[data-testid*="model-switcher"] [role="menuitem"]',
-    ],
   };
 
   window.__clashAdapter = {
@@ -62,24 +52,16 @@
       input.focus();
       await delay(200);
 
-      // For ProseMirror contenteditable: use execCommand
+      // For ProseMirror contenteditable: use clipboard paste
       if (input.isContentEditable || input.getAttribute('contenteditable') === 'true') {
         // Select all existing content and delete
         document.execCommand('selectAll', false, null);
         document.execCommand('delete', false, null);
         await delay(100);
 
-        // Insert the text
-        document.execCommand('insertText', false, text);
+        // Use clipboard paste for reliable multi-line insertion
+        await clipboardPaste(input, text);
         await delay(100);
-
-        // Fire input event for React to pick up the change
-        input.dispatchEvent(new InputEvent('input', {
-          bubbles: true,
-          cancelable: true,
-          inputType: 'insertText',
-          data: text,
-        }));
       } else {
         // Fallback for textarea/input
         await simulateTyping(input, text);
@@ -140,88 +122,5 @@
       await waitForStable(2000, 10000);
     },
 
-    async getAvailableModels() {
-      try {
-        const btn = findFirst(SELECTORS.modelSelectorButton);
-        if (!btn) return [];
-
-        // Read current model from aria-label (e.g., "Model selector, current model is 5.2")
-        const ariaLabel = btn.getAttribute('aria-label') || '';
-        const currentMatch = ariaLabel.match(/current model is (.+)/i);
-        const currentModel = currentMatch ? currentMatch[1].trim() : btn.innerText.trim();
-
-        // Open the dropdown
-        btn.click();
-        await delay(600);
-
-        // Scrape all model options
-        const options = document.querySelectorAll(
-          SELECTORS.modelDropdownOption.join(', ')
-        );
-        const models = [];
-        const seen = new Set();
-        for (const opt of options) {
-          const name = opt.innerText.trim();
-          if (!name || seen.has(name)) continue;
-          seen.add(name);
-          const id = opt.getAttribute('data-testid')
-                  || opt.getAttribute('data-value')
-                  || name;
-          const isSelected = opt.getAttribute('aria-checked') === 'true'
-                          || name === currentModel;
-          models.push({ id, name, selected: isSelected });
-        }
-
-        // Close the dropdown
-        btn.click();
-        await delay(300);
-        document.dispatchEvent(new KeyboardEvent('keydown', {
-          key: 'Escape', code: 'Escape', bubbles: true,
-        }));
-        await delay(200);
-
-        return models;
-      } catch (e) {
-        console.error('[Clash] ChatGPT getAvailableModels error:', e);
-        return [];
-      }
-    },
-
-    async selectModel(modelId) {
-      const btn = findFirst(SELECTORS.modelSelectorButton);
-      if (!btn) throw new Error('ChatGPT model selector button not found');
-
-      // Check if already on the right model
-      const ariaLabel = btn.getAttribute('aria-label') || '';
-      if (ariaLabel.includes(modelId) || btn.innerText.trim() === modelId) return;
-
-      btn.click();
-      await delay(600);
-
-      // Find and click the matching option
-      const options = document.querySelectorAll(
-        SELECTORS.modelDropdownOption.join(', ')
-      );
-      let found = false;
-      for (const opt of options) {
-        const optId = opt.getAttribute('data-testid')
-                    || opt.getAttribute('data-value')
-                    || opt.innerText.trim();
-        if (optId === modelId || opt.innerText.trim() === modelId) {
-          opt.click();
-          found = true;
-          break;
-        }
-      }
-
-      if (!found) {
-        document.dispatchEvent(new KeyboardEvent('keydown', {
-          key: 'Escape', code: 'Escape', bubbles: true,
-        }));
-        throw new Error(`ChatGPT model "${modelId}" not found in dropdown`);
-      }
-
-      await delay(500);
-    },
   };
 })();

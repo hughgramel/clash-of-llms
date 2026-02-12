@@ -23,16 +23,6 @@
       'button[aria-label="Stop Response"]',
       'button[aria-label*="Stop" i]',
     ],
-    modelSelectorButton: [
-      'button[data-testid="model-selector-dropdown"]',
-      'button[aria-haspopup="menu"][aria-label*="model" i]',
-    ],
-    modelDropdownOption: [
-      '[data-radix-popper-content-wrapper] [role="option"]',
-      '[data-radix-popper-content-wrapper] [role="menuitemradio"]',
-      '[data-radix-popper-content-wrapper] button[role="menuitem"]',
-      '[role="listbox"] [role="option"]',
-    ],
     // Response structure: div[data-is-streaming] > ... > .font-claude-response > .standard-markdown > p.font-claude-response-body
     streamingIndicator: [
       'div[data-is-streaming="true"]',
@@ -71,17 +61,9 @@
         document.execCommand('delete', false, null);
         await delay(100);
 
-        // Insert text via execCommand (proper ProseMirror interaction)
-        document.execCommand('insertText', false, text);
+        // Use clipboard paste for reliable multi-line insertion
+        await clipboardPaste(input, text);
         await delay(200);
-
-        // Fire input event so React/framework picks up the change
-        input.dispatchEvent(new InputEvent('input', {
-          bubbles: true,
-          cancelable: true,
-          inputType: 'insertText',
-          data: text,
-        }));
       } else {
         await simulateTyping(input, text);
       }
@@ -186,86 +168,5 @@
       await waitForStable(2000, 10000);
     },
 
-    async getAvailableModels() {
-      try {
-        const btn = findFirst(SELECTORS.modelSelectorButton);
-        if (!btn) return [];
-
-        const currentModel = btn.innerText.trim();
-
-        // Open the dropdown
-        btn.click();
-        await delay(600);
-
-        // Scrape all model options
-        const options = document.querySelectorAll(
-          SELECTORS.modelDropdownOption.join(', ')
-        );
-        const models = [];
-        const seen = new Set();
-        for (const opt of options) {
-          const name = opt.innerText.trim();
-          if (!name || seen.has(name)) continue;
-          seen.add(name);
-          const id = opt.getAttribute('data-testid')
-                  || opt.getAttribute('data-value')
-                  || name;
-          models.push({
-            id,
-            name,
-            selected: name === currentModel,
-          });
-        }
-
-        // Close the dropdown
-        btn.click();
-        await delay(300);
-        document.dispatchEvent(new KeyboardEvent('keydown', {
-          key: 'Escape', code: 'Escape', bubbles: true,
-        }));
-        await delay(200);
-
-        return models;
-      } catch (e) {
-        console.error('[Clash] Claude getAvailableModels error:', e);
-        return [];
-      }
-    },
-
-    async selectModel(modelId) {
-      const btn = findFirst(SELECTORS.modelSelectorButton);
-      if (!btn) throw new Error('Claude model selector button not found');
-
-      // Check if already on the right model
-      if (btn.innerText.trim() === modelId) return;
-
-      btn.click();
-      await delay(600);
-
-      // Find and click the matching option
-      const options = document.querySelectorAll(
-        SELECTORS.modelDropdownOption.join(', ')
-      );
-      let found = false;
-      for (const opt of options) {
-        const optId = opt.getAttribute('data-testid')
-                    || opt.getAttribute('data-value')
-                    || opt.innerText.trim();
-        if (optId === modelId || opt.innerText.trim() === modelId) {
-          opt.click();
-          found = true;
-          break;
-        }
-      }
-
-      if (!found) {
-        document.dispatchEvent(new KeyboardEvent('keydown', {
-          key: 'Escape', code: 'Escape', bubbles: true,
-        }));
-        throw new Error(`Claude model "${modelId}" not found in dropdown`);
-      }
-
-      await delay(500);
-    },
   };
 })();

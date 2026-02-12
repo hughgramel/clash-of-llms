@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Clash of LLMs",
-  "description": "Debate arena that pits LLM chatbots against each other in real-time",
+  "description": "Pit AI chatbots against each other in real-time — debates, roasts, interviews, collaborative writing, and more",
   "version": "1.0.0",
   "icons": {
     "16": "icons/icon16.png",
@@ -31,6 +31,7 @@
     "https://*.claude.ai/*",
     "https://grok.com/*",
     "https://gemini.google.com/*",
+    "https://accounts.google.com/*",
     "https://www.perplexity.ai/*"
   ],
   "background": {
@@ -41,31 +42,36 @@
       "matches": ["https://chatgpt.com/*"],
       "js": ["content-scripts/anti-framebusting.js"],
       "run_at": "document_start",
-      "all_frames": true
+      "all_frames": true,
+      "world": "MAIN"
     },
     {
       "matches": ["https://claude.ai/*", "https://*.claude.ai/*"],
       "js": ["content-scripts/anti-framebusting.js"],
       "run_at": "document_start",
-      "all_frames": true
+      "all_frames": true,
+      "world": "MAIN"
     },
     {
       "matches": ["https://grok.com/*"],
       "js": ["content-scripts/anti-framebusting.js"],
       "run_at": "document_start",
-      "all_frames": true
+      "all_frames": true,
+      "world": "MAIN"
     },
     {
       "matches": ["https://gemini.google.com/*"],
       "js": ["content-scripts/anti-framebusting.js"],
       "run_at": "document_start",
-      "all_frames": true
+      "all_frames": true,
+      "world": "MAIN"
     },
     {
       "matches": ["https://www.perplexity.ai/*"],
       "js": ["content-scripts/anti-framebusting.js"],
       "run_at": "document_start",
-      "all_frames": true
+      "all_frames": true,
+      "world": "MAIN"
     },
     {
       "matches": ["https://chatgpt.com/*"],

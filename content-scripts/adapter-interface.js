@@ -67,6 +67,62 @@ function findFirst(selectorList) {
   return null;
 }
 
+// Robust text insertion into contenteditable elements.
+// Tries multiple approaches to handle ProseMirror, tiptap, and other editors.
+async function clipboardPaste(element, text) {
+  element.focus();
+  await delay(100);
+
+  // Approach 1: execCommand('insertText') — works for most ProseMirror editors
+  document.execCommand('insertText', false, text);
+  await delay(150);
+
+  if (element.textContent.trim()) {
+    // Fire input event so the framework picks up the change
+    element.dispatchEvent(new InputEvent('input', {
+      bubbles: true,
+      cancelable: true,
+      inputType: 'insertText',
+      data: text,
+    }));
+    return;
+  }
+
+  // Approach 2: Synthetic clipboard paste event (for tiptap and other editors)
+  try {
+    const dt = new DataTransfer();
+    dt.setData('text/plain', text);
+    const pasteEvent = new ClipboardEvent('paste', {
+      bubbles: true,
+      cancelable: true,
+      clipboardData: dt,
+    });
+    element.dispatchEvent(pasteEvent);
+    await delay(150);
+
+    if (element.textContent.trim()) {
+      element.dispatchEvent(new InputEvent('input', {
+        bubbles: true,
+        cancelable: true,
+        inputType: 'insertFromPaste',
+        data: text,
+      }));
+      return;
+    }
+  } catch (e) {
+    // ClipboardEvent constructor might not support clipboardData
+  }
+
+  // Approach 3: Direct textContent as last resort
+  element.textContent = text;
+  element.dispatchEvent(new InputEvent('input', {
+    bubbles: true,
+    cancelable: true,
+    inputType: 'insertText',
+    data: text,
+  }));
+}
+
 async function simulateTyping(element, text) {
   element.focus();
 
@@ -88,26 +144,17 @@ async function simulateTyping(element, text) {
     element.dispatchEvent(new Event('change', { bubbles: true }));
   } else if (element.getAttribute('contenteditable') === 'true' ||
              element.isContentEditable) {
-    // ContentEditable / ProseMirror
+    // ContentEditable / ProseMirror / tiptap
     element.focus();
     await delay(100);
 
-    // Use execCommand which works with ProseMirror's internal state
-    // First select all existing content and delete it
+    // Select all existing content and delete it
     document.execCommand('selectAll', false, null);
     document.execCommand('delete', false, null);
     await delay(50);
 
-    // Insert the new text
-    document.execCommand('insertText', false, text);
-
-    // Fire events so the framework picks up the change
-    element.dispatchEvent(new InputEvent('input', {
-      bubbles: true,
-      cancelable: true,
-      inputType: 'insertText',
-      data: text,
-    }));
+    // Use clipboard paste for reliable multi-line insertion
+    await clipboardPaste(element, text);
   }
 
   await delay(100);
@@ -157,26 +204,6 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           await adapter.waitForResponseComplete();
           const response = await adapter.getLatestResponse();
           sendResponse({ success: true, response });
-          break;
-        }
-
-        case 'GET_AVAILABLE_MODELS': {
-          if (typeof adapter.getAvailableModels !== 'function') {
-            sendResponse({ success: true, models: [] });
-            break;
-          }
-          const models = await adapter.getAvailableModels();
-          sendResponse({ success: true, models });
-          break;
-        }
-
-        case 'SELECT_MODEL': {
-          if (typeof adapter.selectModel !== 'function') {
-            sendResponse({ success: true, skipped: true });
-            break;
-          }
-          await adapter.selectModel(message.modelId);
-          sendResponse({ success: true });
           break;
         }
 

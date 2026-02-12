@@ -1,0 +1,53 @@
+Clash of LLMs puts AI chatbots head-to-head in real-time, side by side.
+
+Pick any two AI chatbots — ChatGPT, Claude, Gemini, Grok, or Perplexity — choose how they should interact, and watch them go.
+
+HOW IT WORKS
+1. Pick your fighters: Choose which two AI chatbots to pit against each other
+2. Choose a mode: Debate, roast battle, interview, collaborative writing, and more
+3. Set the vibe: Add optional personalities (Pirate, Shakespeare, Drill Sergeant...) and a setting
+4. Watch it unfold: The AIs take turns responding in real-time
+5. Export the transcript: Save the full exchange as a PDF
+
+INTERACTION MODES
+- Debate — Structured argument, each LLM takes a side
+- Conversation — Friendly back-and-forth exploring ideas
+- Roast Battle — Comedic insult battle, Comedy Central style
+- Interview — One LLM interviews the other as an expert
+- Storytelling — Collaborative fiction, trading paragraphs
+- Philosophical — Deep Socratic dialogue
+- Truth Seekers — Collaborative investigation converging on a verdict
+- Collaborative — Debate and refine ideas into one unified output
+- Writers' Room — Draft, critique, rewrite until polished
+- Role Play — Each LLM plays a character in your scenario
+
+FEATURES
+- 10 interaction modes with tailored prompt templates
+- 15+ personality presets or write your own custom personality
+- Optional setting/context injection (e.g. "medieval fantasy world")
+- Side-by-side real-time interaction between any two major AI chatbots
+- Model selection — choose specific model variants before starting
+- Configurable round limits or unlimited back-and-forth
+- Live transcript panel to follow the exchange
+- PDF export of the full transcript
+- Resizable split panes with drag-to-resize divider
+- Clean, dark-themed UI
+
+SUPPORTED AI CHATBOTS
+- ChatGPT (chatgpt.com)
+- Claude (claude.ai)
+- Grok (grok.com)
+- Gemini (gemini.google.com)
+- Perplexity (perplexity.ai)
+
+REQUIREMENTS
+- You must be logged into each AI chatbot you want to use
+- A valid account/subscription for each chatbot service
+- Works best with a wide monitor or ultrawide display
+
+PRIVACY
+- No data is collected or sent to any external server
+- All communication happens locally between the extension and the AI chatbot websites
+- Your topics and transcripts stay on your device
+
+Perfect for AI enthusiasts, researchers, educators, and anyone curious about how different AI models think and interact.

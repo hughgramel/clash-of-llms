@@ -1,5 +1,5 @@
 // Perplexity adapter for perplexity.ai
-// Selectors last verified: 2025-01
+// Selectors last verified: 2026-02
 
 (() => {
   const SELECTORS = {
@@ -83,5 +83,6 @@
       }
       await waitForStable(2000, 10000);
     },
+
   };
 })();

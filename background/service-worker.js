@@ -68,6 +68,7 @@ function notifyArena(msg) {
 // --- Arena Message Handler ---
 
 async function handleArenaMessage(msg, port) {
+  console.log('[Clash SW] handleArenaMessage:', msg.type, JSON.stringify(msg));
   switch (msg.type) {
     case MSG.START_DEBATE:
       await startDebate(msg);
@@ -100,14 +101,19 @@ async function discoverFrames(tabId, leftLLM, rightLLM) {
   let leftFrameId = null;
   let rightFrameId = null;
 
+  if (!frames) return { leftFrameId, rightFrameId };
+
   const leftUrlBase = new URL(LLM_CONFIG[leftLLM].url).hostname;
   const rightUrlBase = new URL(LLM_CONFIG[rightLLM].url).hostname;
+
+  console.log(`[Clash] discoverFrames: looking for ${leftUrlBase} and ${rightUrlBase} in ${frames.length} frames`);
 
   for (const frame of frames) {
     if (frame.frameId === 0) continue; // Skip top-level frame
 
     try {
       const frameHost = new URL(frame.url).hostname;
+      console.log(`[Clash]   frame ${frame.frameId}: ${frame.url} (host: ${frameHost})`);
       if (frameHost.includes(leftUrlBase) && leftFrameId === null) {
         leftFrameId = frame.frameId;
       }
@@ -118,25 +124,31 @@ async function discoverFrames(tabId, leftLLM, rightLLM) {
         }
       }
     } catch (e) {
-      // Invalid URL, skip
+      console.log(`[Clash]   frame ${frame.frameId}: invalid URL "${frame.url}"`);
     }
   }
 
+  console.log(`[Clash] discoverFrames result: left=${leftFrameId}, right=${rightFrameId}`);
   return { leftFrameId, rightFrameId };
 }
 
 // --- Send Message to Content Script in Frame ---
 
 function sendToFrame(tabId, frameId, message) {
+  console.log(`[Clash SW] sendToFrame(tab=${tabId}, frame=${frameId}, type=${message.type})`);
   return new Promise((resolve, reject) => {
     chrome.tabs.sendMessage(tabId, message, { frameId }, (response) => {
       if (chrome.runtime.lastError) {
+        console.error(`[Clash SW] sendToFrame error (${message.type}):`, chrome.runtime.lastError.message);
         reject(new Error(chrome.runtime.lastError.message));
       } else if (!response) {
+        console.error(`[Clash SW] sendToFrame no response (${message.type})`);
         reject(new Error('No response from content script'));
       } else if (!response.success) {
+        console.error(`[Clash SW] sendToFrame failed (${message.type}):`, response.error);
         reject(new Error(response.error || 'Content script error'));
       } else {
+        console.log(`[Clash SW] sendToFrame success (${message.type})`);
         resolve(response);
       }
     });
@@ -146,12 +158,16 @@ function sendToFrame(tabId, frameId, message) {
 // --- Wait for Adapter Ready ---
 
 async function waitForAdapterReady(tabId, frameId, name, maxRetries = 30) {
+  console.log(`[Clash SW] waitForAdapterReady: ${name} (frame=${frameId})`);
   for (let i = 0; i < maxRetries; i++) {
     try {
       const result = await sendToFrame(tabId, frameId, { type: 'IS_READY' });
-      if (result.ready) return true;
+      if (result.ready) {
+        console.log(`[Clash SW] ${name} adapter ready after ${i + 1} attempts`);
+        return true;
+      }
     } catch (e) {
-      // Content script not ready yet
+      if (i % 5 === 0) console.log(`[Clash SW] ${name} adapter not ready yet (attempt ${i + 1}/${maxRetries}): ${e.message}`);
     }
     await new Promise((r) => setTimeout(r, 2000));
   }
@@ -160,44 +176,474 @@ async function waitForAdapterReady(tabId, frameId, name, maxRetries = 30) {
 
 // --- Prompt Templates ---
 // Turns are numbered sequentially: 1, 2, 3, 4, 5...
-// Odd turns = left debater (FOR), Even turns = right debater (AGAINST)
+// Each mode provides its own set of prompt templates.
+// LLM identities are never revealed — generic role terms are used instead.
 
 let turnCounter = 0;
 
-function makeInitialPrompt(topic, position, opponentName) {
-  turnCounter = 1;
-  return `You are participating in a structured debate against ${opponentName}. Your position is: ${position}.
+const MODE_PROMPTS = {
+  debate: {
+    makeInitial(topic, roleName) {
+      turnCounter = 1;
+      return `You are participating in a structured debate. Your position is: ${roleName}.
 
 The debate topic is: "${topic}"
 
 This is Turn #${turnCounter}. Begin your response with "${turnCounter}." on its own line, then present your opening argument. Be concise but thorough (2-3 paragraphs). Address the topic directly and present your strongest points.`;
-}
-
-function makeInitialWithContext(topic, position, opponentName, opponentArgument) {
-  turnCounter = 2;
-  return `You are participating in a structured debate against ${opponentName}. Your position is: ${position}.
+    },
+    makeInitialWithContext(topic, roleName, opponentText) {
+      turnCounter = 2;
+      return `You are participating in a structured debate. Your position is: ${roleName}.
 
 The debate topic is: "${topic}"
 
 Turn #1 (your opponent's opening argument):
 ---
-${opponentArgument}
+${opponentText}
 ---
 
 This is Turn #${turnCounter}. Begin your response with "${turnCounter}." on its own line, then respond to their points while presenting your own opening argument. Be concise (2-3 paragraphs).`;
-}
+    },
+    makeFollowup(topic, opponentText, roundNum) {
+      turnCounter++;
+      const prev = turnCounter - 1;
+      return `We are in Round ${roundNum} of our debate on: "${topic}"
 
-function makeRebuttalPrompt(topic, opponentName, opponentResponse, roundNum) {
-  turnCounter++;
-  const prevTurn = turnCounter - 1;
-  return `We are in Round ${roundNum} of our debate on: "${topic}"
-
-Turn #${prevTurn} — ${opponentName} argued:
+Turn #${prev} — your opponent argued:
 ---
-${opponentResponse}
+${opponentText}
 ---
 
 This is Turn #${turnCounter}. Begin your response with "${turnCounter}." on its own line, then respond to their argument. Address their specific points, present counter-arguments, and strengthen your position. Be concise (2-3 paragraphs).`;
+    },
+  },
+
+  conversation: {
+    makeInitial(topic, roleName) {
+      turnCounter = 1;
+      return `You are having a thoughtful conversation with another participant about an interesting topic.
+
+The topic is: "${topic}"
+
+This is Turn #${turnCounter}. Begin your response with "${turnCounter}." on its own line. Share your initial thoughts on this topic. Be curious, open-minded, and collaborative. Ask a thoughtful question at the end to keep the dialogue going. (2-3 paragraphs)`;
+    },
+    makeInitialWithContext(topic, roleName, opponentText) {
+      turnCounter = 2;
+      return `You are having a thoughtful conversation with another participant about an interesting topic.
+
+The topic is: "${topic}"
+
+Turn #1 — the other participant said:
+---
+${opponentText}
+---
+
+This is Turn #${turnCounter}. Begin your response with "${turnCounter}." on its own line. Engage with what they said — agree, build on their ideas, and add your own perspective. End with a question or observation to continue the dialogue. (2-3 paragraphs)`;
+    },
+    makeFollowup(topic, opponentText, roundNum) {
+      turnCounter++;
+      const prev = turnCounter - 1;
+      return `We are in Round ${roundNum} of our conversation about: "${topic}"
+
+Turn #${prev} — the other participant said:
+---
+${opponentText}
+---
+
+This is Turn #${turnCounter}. Begin your response with "${turnCounter}." on its own line. Continue the conversation naturally. Build on what was said, offer new angles, share related ideas, and ask questions. Be collaborative and curious. (2-3 paragraphs)`;
+    },
+  },
+
+  roast: {
+    makeInitial(topic, roleName) {
+      turnCounter = 1;
+      return `You are in a comedic roast battle. This is all in good fun — think Comedy Central Roast style.
+
+The roast topic/theme is: "${topic}"
+
+This is Turn #${turnCounter}. Begin your response with "${turnCounter}." on its own line. Open with your best roast material related to this theme. Be creative, witty, and savage but keep it comedic. Use punchlines, callbacks, and comedic timing. (2-3 paragraphs)`;
+    },
+    makeInitialWithContext(topic, roleName, opponentText) {
+      turnCounter = 2;
+      return `You are in a comedic roast battle. This is all in good fun — think Comedy Central Roast style.
+
+The roast topic/theme is: "${topic}"
+
+Turn #1 — your opponent roasted you:
+---
+${opponentText}
+---
+
+This is Turn #${turnCounter}. Begin your response with "${turnCounter}." on its own line. Fire back! Address their roast, flip their jokes, and hit them with even better material. Be creative, witty, and devastating. (2-3 paragraphs)`;
+    },
+    makeFollowup(topic, opponentText, roundNum) {
+      turnCounter++;
+      const prev = turnCounter - 1;
+      return `We are in Round ${roundNum} of our roast battle. The theme is: "${topic}"
+
+Turn #${prev} — your opponent roasted you:
+---
+${opponentText}
+---
+
+This is Turn #${turnCounter}. Begin your response with "${turnCounter}." on its own line. Clap back hard! Reference their previous jokes, find new angles, and escalate the comedy. Keep it clever and devastating. (2-3 paragraphs)`;
+    },
+  },
+
+  interview: {
+    makeInitial(topic, roleName) {
+      turnCounter = 1;
+      return `You are a skilled interviewer conducting an in-depth interview with a domain expert.
+
+The interview topic is: "${topic}"
+
+This is Turn #${turnCounter}. Begin your response with "${turnCounter}." on its own line. Open the interview: briefly introduce the topic, welcome your guest, and ask your first compelling question. Be professional but engaging. (1-2 paragraphs)`;
+    },
+    makeInitialWithContext(topic, roleName, opponentText) {
+      turnCounter = 2;
+      return `You are a knowledgeable expert being interviewed about a topic you know deeply.
+
+The interview topic is: "${topic}"
+
+Turn #1 — The interviewer said:
+---
+${opponentText}
+---
+
+This is Turn #${turnCounter}. Begin your response with "${turnCounter}." on its own line. Answer their question thoughtfully and in detail, drawing on your expertise. Share insights, examples, and nuance. (2-3 paragraphs)`;
+    },
+    makeFollowup(topic, opponentText, roundNum) {
+      turnCounter++;
+      const prev = turnCounter - 1;
+      const isInterviewer = (turnCounter % 2 === 1);
+      if (isInterviewer) {
+        return `We are in Round ${roundNum} of this interview on: "${topic}"
+
+Turn #${prev} — The expert answered:
+---
+${opponentText}
+---
+
+This is Turn #${turnCounter}. Begin your response with "${turnCounter}." on its own line. As the interviewer, react briefly to their answer and ask a follow-up question that digs deeper or explores a new angle. Be insightful. (1-2 paragraphs)`;
+      }
+      return `We are in Round ${roundNum} of this interview on: "${topic}"
+
+Turn #${prev} — The interviewer asked:
+---
+${opponentText}
+---
+
+This is Turn #${turnCounter}. Begin your response with "${turnCounter}." on its own line. As the expert, answer their question with depth and authority. Provide examples, evidence, and unique insights. (2-3 paragraphs)`;
+    },
+  },
+
+  storytelling: {
+    makeInitial(topic, roleName) {
+      turnCounter = 1;
+      return `You are collaboratively writing a story with another author. You will take turns continuing the narrative.
+
+The story premise is: "${topic}"
+
+This is Turn #${turnCounter}. Begin your response with "${turnCounter}." on its own line. Write the opening of the story: set the scene, introduce a character or situation, and establish the tone. End at a moment that invites your co-author to continue. Write in prose, not outline form. (2-3 paragraphs)`;
+    },
+    makeInitialWithContext(topic, roleName, opponentText) {
+      turnCounter = 2;
+      return `You are collaboratively writing a story with another author. You take turns continuing the narrative.
+
+The story premise is: "${topic}"
+
+Turn #1 — Your co-author wrote:
+---
+${opponentText}
+---
+
+This is Turn #${turnCounter}. Begin your response with "${turnCounter}." on its own line. Continue the story seamlessly from where they left off. Develop the characters, advance the plot, and add a twist or complication. End at a moment that invites the next continuation. (2-3 paragraphs)`;
+    },
+    makeFollowup(topic, opponentText, roundNum) {
+      turnCounter++;
+      const prev = turnCounter - 1;
+      return `We are on Round ${roundNum} of our collaborative story. The premise was: "${topic}"
+
+Turn #${prev} — Your co-author continued the story:
+---
+${opponentText}
+---
+
+This is Turn #${turnCounter}. Begin your response with "${turnCounter}." on its own line. Continue the story from exactly where they left off. Maintain consistency with characters and plot, raise the stakes, and add new elements. End at an exciting moment. (2-3 paragraphs)`;
+    },
+  },
+
+  philosophical: {
+    makeInitial(topic, roleName) {
+      turnCounter = 1;
+      return `You are engaged in a deep philosophical dialogue. This is a Socratic exchange seeking truth and understanding, not a debate to win.
+
+The philosophical question is: "${topic}"
+
+This is Turn #${turnCounter}. Begin your response with "${turnCounter}." on its own line. Present your philosophical perspective on this question. Draw on relevant philosophical traditions, thought experiments, or frameworks. Pose a challenging question back to your interlocutor. (2-3 paragraphs)`;
+    },
+    makeInitialWithContext(topic, roleName, opponentText) {
+      turnCounter = 2;
+      return `You are engaged in a deep philosophical dialogue. This is a Socratic exchange seeking truth and understanding.
+
+The philosophical question is: "${topic}"
+
+Turn #1 — Your interlocutor offered this perspective:
+---
+${opponentText}
+---
+
+This is Turn #${turnCounter}. Begin your response with "${turnCounter}." on its own line. Engage deeply with their philosophical perspective. Where do you agree? Where do you see gaps? Offer an alternative framework or build on their ideas. Pose a question that pushes the inquiry deeper. (2-3 paragraphs)`;
+    },
+    makeFollowup(topic, opponentText, roundNum) {
+      turnCounter++;
+      const prev = turnCounter - 1;
+      return `We are in Round ${roundNum} of our philosophical dialogue on: "${topic}"
+
+Turn #${prev} — Your interlocutor reflected:
+---
+${opponentText}
+---
+
+This is Turn #${turnCounter}. Begin your response with "${turnCounter}." on its own line. Deepen the philosophical inquiry. Examine assumptions, explore paradoxes, introduce relevant thought experiments, and seek synthesis between your perspectives. (2-3 paragraphs)`;
+    },
+  },
+
+  truth: {
+    makeInitial(topic, roleName) {
+      turnCounter = 1;
+      return `You are a truth-seeking investigator collaborating with another investigator to find the most accurate, well-supported answer to a question. You are not debating — you are working together to converge on the truth.
+
+The question to investigate is: "${topic}"
+
+This is Turn #${turnCounter}. Begin your response with "${turnCounter}." on its own line. Present your initial analysis: state your current position clearly, present your strongest evidence, and identify areas of uncertainty. Be honest about what you don't know. (2-3 paragraphs)`;
+    },
+    makeInitialWithContext(topic, roleName, opponentText) {
+      turnCounter = 2;
+      return `You are a truth-seeking investigator collaborating with another investigator to find the most accurate answer to a question. You are not debating — you are working together toward the truth.
+
+The question to investigate is: "${topic}"
+
+Turn #1 — Your fellow investigator presented their initial analysis:
+---
+${opponentText}
+---
+
+This is Turn #${turnCounter}. Begin your response with "${turnCounter}." on its own line. Evaluate their analysis honestly: acknowledge points where they are correct, identify any gaps or errors in their reasoning, and add your own evidence and perspective. State where you agree and where you diverge. (2-3 paragraphs)`;
+    },
+    makeFollowup(topic, opponentText, roundNum, isLastRound) {
+      turnCounter++;
+      const prev = turnCounter - 1;
+      if (isLastRound) {
+        return `We are in the FINAL round of our truth-seeking investigation on: "${topic}"
+
+Turn #${prev} — Your fellow investigator said:
+---
+${opponentText}
+---
+
+This is Turn #${turnCounter}. Begin your response with "${turnCounter}." on its own line.
+
+Write your FINAL VERDICT. Synthesize everything discussed. State the conclusion you've converged on, note any remaining areas of disagreement, and give your confidence level. Start with "FINAL VERDICT:" after the turn number. Be definitive. (2-3 paragraphs)`;
+      }
+      return `We are in Round ${roundNum} of our truth-seeking investigation on: "${topic}"
+
+Turn #${prev} — Your fellow investigator said:
+---
+${opponentText}
+---
+
+This is Turn #${turnCounter}. Begin your response with "${turnCounter}." on its own line. Continue the investigation: acknowledge where you've changed your mind, present new evidence or angles, and work toward convergence. Be explicit about what you now agree on and what remains unresolved. (2-3 paragraphs)`;
+    },
+  },
+
+  collaborative: {
+    makeInitial(topic, roleName) {
+      turnCounter = 1;
+      return `You and a colleague are collaborating to produce the best possible output on a task. You should debate ideas, challenge each other's thinking, and refine toward a single unified result.
+
+The task/topic is: "${topic}"
+
+This is Turn #${turnCounter}. Begin your response with "${turnCounter}." on its own line. Present your initial approach or draft. Be specific and actionable. Highlight areas where you'd like your colleague's input or pushback. (2-3 paragraphs)`;
+    },
+    makeInitialWithContext(topic, roleName, opponentText) {
+      turnCounter = 2;
+      return `You and a colleague are collaborating to produce the best possible output on a task. Debate ideas, challenge thinking, and refine toward a unified result.
+
+The task/topic is: "${topic}"
+
+Turn #1 — Your colleague proposed:
+---
+${opponentText}
+---
+
+This is Turn #${turnCounter}. Begin your response with "${turnCounter}." on its own line. Evaluate their approach as a colleague: what's strong, what needs improvement, and what's missing? Offer your own refinements or alternative approaches. Push toward a better combined result. (2-3 paragraphs)`;
+    },
+    makeFollowup(topic, opponentText, roundNum, isLastRound) {
+      turnCounter++;
+      const prev = turnCounter - 1;
+      if (isLastRound) {
+        return `We are in the FINAL round of our collaboration on: "${topic}"
+
+Turn #${prev} — Your colleague said:
+---
+${opponentText}
+---
+
+This is Turn #${turnCounter}. Begin your response with "${turnCounter}." on its own line.
+
+Write the FINAL UNIFIED OUTPUT. Synthesize the best ideas from both colleagues into one polished, cohesive result. Start with "FINAL OUTPUT:" after the turn number. This should read as a single authoritative piece, not a summary of the discussion. (2-4 paragraphs)`;
+      }
+      return `We are in Round ${roundNum} of our collaboration on: "${topic}"
+
+Turn #${prev} — Your colleague said:
+---
+${opponentText}
+---
+
+This is Turn #${turnCounter}. Begin your response with "${turnCounter}." on its own line. Build on their feedback: incorporate what works, defend what you believe is right, and compromise where appropriate. Keep refining toward the strongest possible unified output. (2-3 paragraphs)`;
+    },
+  },
+
+  writers_room: {
+    makeInitial(topic, roleName) {
+      turnCounter = 1;
+      return `You are a talented writer in a writers' room. Your job is to draft a piece of creative content based on a brief, then iterate with your partner until it's polished and ready to publish.
+
+The brief is: "${topic}"
+
+This is Turn #${turnCounter}. Begin your response with "${turnCounter}." on its own line. Write your FIRST DRAFT of the requested piece. Match the format and tone implied by the brief (if it asks for a tweet, write a tweet; if it asks for a greentext, write a greentext; if it asks for a short story, write a short story). Just write the piece itself — no meta-commentary.`;
+    },
+    makeInitialWithContext(topic, roleName, opponentText) {
+      turnCounter = 2;
+      return `You are a sharp editor in a writers' room. Your colleague just wrote a first draft and you need to critique it and write an improved version.
+
+The original brief was: "${topic}"
+
+Turn #1 — The writer wrote this draft:
+---
+${opponentText}
+---
+
+This is Turn #${turnCounter}. Begin your response with "${turnCounter}." on its own line. First, give 2-3 sentences of specific, constructive feedback on what works and what doesn't. Then write your REVISED VERSION of the piece — a complete rewrite incorporating your improvements. Keep the same format/length as the original.`;
+    },
+    makeFollowup(topic, opponentText, roundNum, isLastRound) {
+      turnCounter++;
+      const prev = turnCounter - 1;
+      const isWriter = (turnCounter % 2 === 1);
+      if (isLastRound) {
+        return `We are in the FINAL round of our writers' room session. The brief was: "${topic}"
+
+Turn #${prev} — Your partner wrote:
+---
+${opponentText}
+---
+
+This is Turn #${turnCounter}. Begin your response with "${turnCounter}." on its own line.
+
+Write the FINAL POLISHED VERSION. Take the best elements from all previous drafts and produce the definitive version. Start with "FINAL VERSION:" after the turn number. This should be publication-ready — no feedback, no commentary, just the finished piece.`;
+      }
+      if (isWriter) {
+        return `We are in Round ${roundNum} of our writers' room session. The brief was: "${topic}"
+
+Turn #${prev} — Your editor gave feedback and rewrote:
+---
+${opponentText}
+---
+
+This is Turn #${turnCounter}. Begin your response with "${turnCounter}." on its own line. Consider their feedback and revision. Write your NEXT DRAFT — keep what improved, push back on changes you disagree with, and elevate the piece further. Write the full piece, not just notes.`;
+      }
+      return `We are in Round ${roundNum} of our writers' room session. The brief was: "${topic}"
+
+Turn #${prev} — The writer submitted a new draft:
+---
+${opponentText}
+---
+
+This is Turn #${turnCounter}. Begin your response with "${turnCounter}." on its own line. Give brief, specific feedback (2-3 sentences) then write your REVISED VERSION. Focus on tightening the language, sharpening the impact, and making every word count. Write the full piece.`;
+    },
+  },
+
+  roleplay: {
+    makeInitial(topic, roleName) {
+      turnCounter = 1;
+      return `You are playing a character in an interactive role-play scenario. Stay fully in character throughout your response.
+
+The scenario is: "${topic}"
+
+This is Turn #${turnCounter}. Begin your response with "${turnCounter}." on its own line. Set the scene and begin acting as your character. Establish who you are through dialogue and action. Use a mix of dialogue and brief narration. (2-3 paragraphs)`;
+    },
+    makeInitialWithContext(topic, roleName, opponentText) {
+      turnCounter = 2;
+      return `You are playing a character in an interactive role-play scenario. Stay fully in character throughout your response.
+
+The scenario is: "${topic}"
+
+Turn #1 — The other character:
+---
+${opponentText}
+---
+
+This is Turn #${turnCounter}. Begin your response with "${turnCounter}." on its own line. React in character to what just happened. Use dialogue and narration to advance the scene naturally. (2-3 paragraphs)`;
+    },
+    makeFollowup(topic, opponentText, roundNum) {
+      turnCounter++;
+      const prev = turnCounter - 1;
+      return `We are in Round ${roundNum} of our role-play. The scenario: "${topic}"
+
+Turn #${prev} — The other character:
+---
+${opponentText}
+---
+
+This is Turn #${turnCounter}. Begin your response with "${turnCounter}." on its own line. Continue the scene in character. React naturally, advance the story, and keep the drama engaging. (2-3 paragraphs)`;
+    },
+  },
+};
+
+// --- Personality Injection ---
+
+function applyPersonality(promptText, personality) {
+  if (!personality || personality === 'none') return promptText;
+  // Support both PERSONALITIES keys and free-text personality descriptions
+  const preset = PERSONALITIES[personality];
+  const instruction = (preset && preset.promptFragment) ? preset.promptFragment : personality;
+  return promptText + '\n\nIMPORTANT STYLE INSTRUCTION: ' + instruction + ' Maintain this persona consistently throughout your entire response.';
+}
+
+// --- Setting Injection ---
+
+function applySetting(promptText, setting) {
+  if (!setting) return promptText;
+  return promptText + '\n\nSETTING/CONTEXT: ' + setting;
+}
+
+// --- Prompt Construction ---
+
+function makeInitialPrompt(topic, roleName, mode, personalityKey, setting) {
+  const prompts = MODE_PROMPTS[mode] || MODE_PROMPTS.debate;
+  let text = prompts.makeInitial(topic, roleName);
+  text = applySetting(text, setting);
+  return applyPersonality(text, personalityKey);
+}
+
+function makeInitialWithContextPrompt(topic, roleName, opponentText, mode, personalityKey, setting) {
+  const prompts = MODE_PROMPTS[mode] || MODE_PROMPTS.debate;
+  let text = prompts.makeInitialWithContext(topic, roleName, opponentText);
+  text = applySetting(text, setting);
+  return applyPersonality(text, personalityKey);
+}
+
+function makeFollowupPrompt(topic, opponentText, roundNum, mode, personalityKey, isLastRound, setting) {
+  const prompts = MODE_PROMPTS[mode] || MODE_PROMPTS.debate;
+  let text;
+  if (mode === 'truth' || mode === 'collaborative' || mode === 'writers_room') {
+    text = prompts.makeFollowup(topic, opponentText, roundNum, isLastRound);
+  } else {
+    text = prompts.makeFollowup(topic, opponentText, roundNum);
+  }
+  text = applySetting(text, setting);
+  return applyPersonality(text, personalityKey);
 }
 
 // --- Keep-Alive Alarm ---
@@ -266,12 +712,28 @@ async function fetchModelsForSide(tabId, frameId, llmKey, side) {
   try {
     const name = LLM_CONFIG[llmKey].name;
     await waitForAdapterReady(tabId, frameId, name, 20);
-    const result = await sendToFrame(tabId, frameId, { type: 'GET_AVAILABLE_MODELS' });
+
+    // Wait extra time for model selector UI to render after page is ready
+    await new Promise((r) => setTimeout(r, 3000));
+
+    // Try up to 3 times with increasing delays — model selector may render late
+    let models = [];
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        const result = await sendToFrame(tabId, frameId, { type: 'GET_AVAILABLE_MODELS' });
+        models = result.models || [];
+        if (models.length > 0) break;
+      } catch (e) {
+        // Adapter might not be ready yet, retry
+      }
+      await new Promise((r) => setTimeout(r, 2000));
+    }
+
     notifyArena({
       type: MSG.MODELS_AVAILABLE,
       side,
       llmKey,
-      models: result.models || [],
+      models,
     });
   } catch (e) {
     console.error(`fetchModelsForSide(${side}) error:`, e);
@@ -286,11 +748,17 @@ async function fetchModelsForSide(tabId, frameId, llmKey, side) {
 
 // --- Main Debate Flow ---
 
-async function startDebate({ topic, roundLimit, leftLLM, rightLLM, leftModel, rightModel }) {
+async function startDebate({ topic, roundLimit, leftLLM, rightLLM, leftModel, rightModel, mode, leftPersonality, rightPersonality, setting }) {
+  console.log('[Clash SW] startDebate called with:', { topic, roundLimit, leftLLM, rightLLM, leftModel, rightModel, mode, leftPersonality, rightPersonality, setting });
   try {
     // Preserve preloaded frame IDs if LLMs haven't changed
     const preloadedLeftFrame = (debateState.leftLLM === leftLLM) ? debateState.leftFrameId : null;
     const preloadedRightFrame = (debateState.rightLLM === rightLLM) ? debateState.rightFrameId : null;
+    console.log('[Clash SW] preloaded frames:', { preloadedLeftFrame, preloadedRightFrame, currentLeftLLM: debateState.leftLLM, currentRightLLM: debateState.rightLLM });
+
+    // Always get fresh tab ID to avoid stale state
+    const tabId = await getCurrentArenaTabId();
+    console.log('[Clash SW] fresh tabId:', tabId);
 
     debateState = {
       status: 'preparing',
@@ -301,29 +769,36 @@ async function startDebate({ topic, roundLimit, leftLLM, rightLLM, leftModel, ri
       rightLLM,
       leftFrameId: preloadedLeftFrame,
       rightFrameId: preloadedRightFrame,
-      tabId: debateState.tabId || null,
+      tabId,
       transcript: [],
+      mode: mode || 'debate',
+      leftPersonality: leftPersonality || 'none',
+      rightPersonality: rightPersonality || 'none',
+      setting: setting || '',
     };
     await persistState();
 
-    // Find the arena tab
-    const tabId = debateState.tabId || await getCurrentArenaTabId();
     if (!tabId) throw new Error('Arena tab not found');
-    debateState.tabId = tabId;
 
     // Reuse preloaded frames or discover fresh
     let leftFrameId = debateState.leftFrameId;
     let rightFrameId = debateState.rightFrameId;
 
     if (leftFrameId === null || rightFrameId === null) {
-      await new Promise((r) => setTimeout(r, 2000));
-      const discovered = await discoverFrames(tabId, leftLLM, rightLLM);
-      leftFrameId = leftFrameId || discovered.leftFrameId;
-      rightFrameId = rightFrameId || discovered.rightFrameId;
+      // Iframes may still be loading — retry discovery up to 20 times (40s total)
+      for (let attempt = 0; attempt < 20; attempt++) {
+        await new Promise((r) => setTimeout(r, 2000));
+        const discovered = await discoverFrames(tabId, leftLLM, rightLLM);
+        leftFrameId = leftFrameId || discovered.leftFrameId;
+        rightFrameId = rightFrameId || discovered.rightFrameId;
+        if (leftFrameId !== null && rightFrameId !== null) break;
+      }
     }
 
-    if (leftFrameId === null) throw new Error(`Could not find ${LLM_CONFIG[leftLLM].name} iframe. Make sure the page has loaded.`);
-    if (rightFrameId === null) throw new Error(`Could not find ${LLM_CONFIG[rightLLM].name} iframe. Make sure the page has loaded.`);
+    console.log('[Clash SW] Frame discovery complete:', { leftFrameId, rightFrameId, tabId });
+
+    if (leftFrameId === null) throw new Error(`Could not find ${LLM_CONFIG[leftLLM].name} iframe. Make sure the page has loaded and you are logged in.`);
+    if (rightFrameId === null) throw new Error(`Could not find ${LLM_CONFIG[rightLLM].name} iframe. Make sure the page has loaded and you are logged in.`);
 
     debateState.leftFrameId = leftFrameId;
     debateState.rightFrameId = rightFrameId;
@@ -333,10 +808,12 @@ async function startDebate({ topic, roundLimit, leftLLM, rightLLM, leftModel, ri
     const leftName = LLM_CONFIG[leftLLM].name;
     const rightName = LLM_CONFIG[rightLLM].name;
 
+    console.log('[Clash SW] Waiting for adapters:', { leftName, leftFrameId, rightName, rightFrameId });
     await Promise.all([
       waitForAdapterReady(tabId, leftFrameId, leftName),
       waitForAdapterReady(tabId, rightFrameId, rightName),
     ]);
+    console.log('[Clash SW] Both adapters ready');
 
     // Select models if specified
     if (leftModel) {
@@ -366,6 +843,7 @@ async function startDebate({ topic, roundLimit, leftLLM, rightLLM, leftModel, ri
 
     await runDebate();
   } catch (err) {
+    console.error('[Clash SW] startDebate error:', err.message, err.stack);
     debateState.status = 'error';
     await persistState();
     stopKeepAlive();
@@ -375,13 +853,21 @@ async function startDebate({ topic, roundLimit, leftLLM, rightLLM, leftModel, ri
 
 async function runDebate() {
   const { tabId, leftFrameId, rightFrameId, topic, roundLimit, leftLLM, rightLLM } = debateState;
-  const leftName = LLM_CONFIG[leftLLM].name;
-  const rightName = LLM_CONFIG[rightLLM].name;
+  const mode = debateState.mode || 'debate';
+  const leftPersonality = debateState.leftPersonality || 'none';
+  const rightPersonality = debateState.rightPersonality || 'none';
+  const setting = debateState.setting || '';
+  const modeConfig = INTERACTION_MODES[mode] || INTERACTION_MODES.debate;
+  const leftRole = modeConfig.roles.left;
+  const rightRole = modeConfig.roles.right;
+
+  console.log('[Clash SW] runDebate:', { mode, leftLLM, rightLLM, leftRole, rightRole, leftPersonality, rightPersonality, setting, topic, roundLimit });
+  console.log('[Clash SW] modeConfig:', JSON.stringify(modeConfig));
 
   try {
     // === Round 1: Opening arguments ===
 
-    // Left LLM goes first (FOR position)
+    // Left LLM goes first
     notifyArena({
       type: MSG.DEBATE_UPDATE,
       round: 1,
@@ -391,19 +877,23 @@ async function runDebate() {
       roundLimit,
     });
 
+    const leftInitialPrompt = makeInitialPrompt(topic, leftRole, mode, leftPersonality, setting);
+    console.log('[Clash SW] Sending initial prompt to LEFT:', leftInitialPrompt.substring(0, 200) + '...');
     await sendToFrame(tabId, leftFrameId, {
       type: 'SEND_MESSAGE',
-      text: makeInitialPrompt(topic, 'FOR the topic', rightName),
+      text: leftInitialPrompt,
     });
 
+    console.log('[Clash SW] Waiting for LEFT response...');
     const leftR1 = await sendToFrame(tabId, leftFrameId, { type: 'WAIT_FOR_RESPONSE' });
     const leftResponse1 = leftR1.response;
+    console.log('[Clash SW] LEFT response received:', (leftResponse1 || '').substring(0, 200) + '...');
     debateState.transcript.push({ round: 1, speaker: leftLLM, text: leftResponse1 });
     await persistState();
 
     if (debateState.status !== 'debating') return;
 
-    // Right LLM responds (AGAINST position, with context)
+    // Right LLM responds (with context from left)
     notifyArena({
       type: MSG.DEBATE_UPDATE,
       round: 1,
@@ -414,13 +904,17 @@ async function runDebate() {
       roundLimit,
     });
 
+    const rightInitialPrompt = makeInitialWithContextPrompt(topic, rightRole, leftResponse1, mode, rightPersonality, setting);
+    console.log('[Clash SW] Sending initial+context prompt to RIGHT:', rightInitialPrompt.substring(0, 200) + '...');
     await sendToFrame(tabId, rightFrameId, {
       type: 'SEND_MESSAGE',
-      text: makeInitialWithContext(topic, 'AGAINST the topic', leftName, leftResponse1),
+      text: rightInitialPrompt,
     });
 
+    console.log('[Clash SW] Waiting for RIGHT response...');
     const rightR1 = await sendToFrame(tabId, rightFrameId, { type: 'WAIT_FOR_RESPONSE' });
     const rightResponse1 = rightR1.response;
+    console.log('[Clash SW] RIGHT response received:', (rightResponse1 || '').substring(0, 200) + '...');
     debateState.transcript.push({ round: 1, speaker: rightLLM, text: rightResponse1 });
     await persistState();
 
@@ -450,7 +944,9 @@ async function runDebate() {
       debateState.currentRound = round;
       await persistState();
 
-      // Left LLM rebuts
+      const isLastRound = roundLimit && round === roundLimit;
+
+      // Left LLM responds
       notifyArena({
         type: MSG.DEBATE_UPDATE,
         round,
@@ -462,7 +958,7 @@ async function runDebate() {
 
       await sendToFrame(tabId, leftFrameId, {
         type: 'SEND_MESSAGE',
-        text: makeRebuttalPrompt(topic, rightName, lastRightResponse, round),
+        text: makeFollowupPrompt(topic, lastRightResponse, round, mode, leftPersonality, isLastRound, setting),
       });
 
       const leftR = await sendToFrame(tabId, leftFrameId, { type: 'WAIT_FOR_RESPONSE' });
@@ -472,7 +968,7 @@ async function runDebate() {
 
       if (debateState.status !== 'debating') break;
 
-      // Right LLM rebuts
+      // Right LLM responds
       notifyArena({
         type: MSG.DEBATE_UPDATE,
         round,
@@ -485,7 +981,7 @@ async function runDebate() {
 
       await sendToFrame(tabId, rightFrameId, {
         type: 'SEND_MESSAGE',
-        text: makeRebuttalPrompt(topic, leftName, lastLeftResponse, round),
+        text: makeFollowupPrompt(topic, lastLeftResponse, round, mode, rightPersonality, isLastRound, setting),
       });
 
       const rightR = await sendToFrame(tabId, rightFrameId, { type: 'WAIT_FOR_RESPONSE' });
@@ -514,6 +1010,7 @@ async function runDebate() {
       transcript: debateState.transcript,
     });
   } catch (err) {
+    console.error('[Clash SW] runDebate error:', err.message, err.stack);
     debateState.status = 'error';
     await persistState();
     stopKeepAlive();
