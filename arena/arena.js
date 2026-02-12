@@ -56,6 +56,7 @@ let debateData = {
   mode: 'debate',
   autoEnd: true,
   turns: [],
+  endReason: null,
 };
 
 // --- Textarea Auto-Expand ---
@@ -328,6 +329,7 @@ startBtn.addEventListener('click', async () => {
     mode: currentMode,
     autoEnd: autoEndCheck.checked,
     turns: [],
+    endReason: null,
   };
 
   await transitionToDebate();
@@ -457,19 +459,59 @@ function handleDebateComplete(msg) {
     newDebateBtn.style.display = '';
   }
 
-  // Handle partial round (left spoke but right didn't before auto-end)
-  if (msg.partialTurn) {
+  // Reconcile arena turns with the full transcript from the service worker.
+  // This catches any turns that were recorded by the SW but never sent via
+  // DEBATE_UPDATE (e.g. when the debate is stopped mid-round after left
+  // responds but before right does).
+  if (msg.transcript && msg.transcript.length > debateData.turns.length) {
     const modeConfig = INTERACTION_MODES[debateData.mode] || INTERACTION_MODES.debate;
-    const turnNum = debateData.turns.length + 1;
-    debateData.turns.push({
-      turn: turnNum,
-      round: msg.partialTurn.round,
-      speaker: msg.partialTurn.speaker,
-      position: msg.partialTurn.speaker === debateData.leftLLM ? modeConfig.roles.left : modeConfig.roles.right,
-      text: msg.partialTurn.text,
-    });
-    appendPartialTranscriptTurn(msg.partialTurn.round, msg.partialTurn.speaker, msg.partialTurn.text);
+    const missing = msg.transcript.slice(debateData.turns.length);
+    // Group missing entries by round to render them properly
+    const missingByRound = {};
+    for (const entry of missing) {
+      if (!missingByRound[entry.round]) missingByRound[entry.round] = [];
+      missingByRound[entry.round].push(entry);
+    }
+    for (const [roundStr, entries] of Object.entries(missingByRound)) {
+      const round = Number(roundStr);
+      const isPartial = entries.length === 1;
+      for (const entry of entries) {
+        const turnNum = debateData.turns.length + 1;
+        debateData.turns.push({
+          turn: turnNum,
+          round,
+          speaker: entry.speaker,
+          position: entry.speaker === debateData.leftLLM ? modeConfig.roles.left : modeConfig.roles.right,
+          text: entry.text,
+        });
+      }
+      // Render the missing round in the transcript modal
+      if (entries.length === 2) {
+        appendTranscriptRound(round, entries[0].speaker, entries[0].text, entries[1].speaker, entries[1].text);
+      } else if (isPartial) {
+        appendPartialTranscriptTurn(round, entries[0].speaker, entries[0].text);
+      }
+    }
+  } else if (msg.partialTurn) {
+    // Fallback: explicit partial turn from auto-end (left spoke, right didn't)
+    const alreadyAdded = debateData.turns.some(
+      t => t.round === msg.partialTurn.round && t.speaker === msg.partialTurn.speaker
+    );
+    if (!alreadyAdded) {
+      const modeConfig = INTERACTION_MODES[debateData.mode] || INTERACTION_MODES.debate;
+      const turnNum = debateData.turns.length + 1;
+      debateData.turns.push({
+        turn: turnNum,
+        round: msg.partialTurn.round,
+        speaker: msg.partialTurn.speaker,
+        position: msg.partialTurn.speaker === debateData.leftLLM ? modeConfig.roles.left : modeConfig.roles.right,
+        text: msg.partialTurn.text,
+      });
+      appendPartialTranscriptTurn(msg.partialTurn.round, msg.partialTurn.speaker, msg.partialTurn.text);
+    }
   }
+
+  debateData.endReason = msg.reason;
 
   exportBtn.disabled = false;
   transcriptBtn.disabled = debateData.turns.length === 0;
@@ -734,9 +776,28 @@ function exportToPDF(triggerBtn) {
       y += 16;
     }
 
-    // --- Footer ---
-    checkPage(40);
+    // --- End Status ---
+    checkPage(60);
     y += 8;
+    doc.setDrawColor(229, 231, 235);
+    doc.setLineWidth(1.5);
+    doc.line(ml, y, pageW - mr, y);
+    y += 24;
+
+    let endLabel = 'Discussion Complete';
+    if (debateData.endReason === 'stopped') {
+      endLabel = 'Debate Stopped';
+    } else if (debateData.endReason === 'round_limit') {
+      endLabel = 'Round Limit Reached — Discussion Complete';
+    }
+
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(11);
+    doc.setTextColor(107, 114, 128);
+    doc.text(endLabel, pageW / 2, y, { align: 'center' });
+    y += 28;
+
+    // --- Footer ---
     doc.setDrawColor(229, 231, 235);
     doc.setLineWidth(0.5);
     doc.line(ml, y, pageW - mr, y);
@@ -797,6 +858,7 @@ function saveDebateToHistory() {
     startTime: debateData.startTime,
     turns: debateData.turns,
     roundLimit: debateData.roundLimit,
+    endReason: debateData.endReason,
     savedAt: new Date().toISOString(),
   };
   const history = loadHistory();
@@ -874,6 +936,7 @@ function viewHistoryEntry(entry) {
     startTime: entry.startTime,
     mode: entry.mode,
     turns: entry.turns,
+    endReason: entry.endReason || null,
   };
 
   // Populate transcript
