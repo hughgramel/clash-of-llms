@@ -14,8 +14,21 @@
     // Some browsers may not allow redefining window.top
   }
 
-  // Intercept location assignments that try to break out
-  const originalDescriptor = Object.getOwnPropertyDescriptor(window, 'location');
-  // We don't override location entirely as it would break the page,
-  // but the window.top override above should be sufficient for most frame-busting code
+  try {
+    // Override window.parent to return window.self
+    // Prevents checks like `if (window.parent !== window)`
+    Object.defineProperty(window, 'parent', {
+      get: function () { return window.self; },
+      configurable: false,
+    });
+  } catch (e) {}
+
+  try {
+    // Override window.frameElement to return null
+    // Prevents checks like `if (window.frameElement)`
+    Object.defineProperty(window, 'frameElement', {
+      get: function () { return null; },
+      configurable: false,
+    });
+  } catch (e) {}
 })();

@@ -3,6 +3,8 @@
 
 importScripts('../shared/constants.js');
 
+const MAX_ROUNDS_SAFETY_CAP = 50;
+
 // --- State ---
 
 let debateState = {
@@ -930,11 +932,12 @@ async function runDebate() {
   const rightPersonality = debateState.rightPersonality || 'none';
   const setting = debateState.setting || '';
   const autoEnd = debateState.autoEnd;
+  const effectiveLimit = roundLimit || MAX_ROUNDS_SAFETY_CAP;
   const modeConfig = INTERACTION_MODES[mode] || INTERACTION_MODES.debate;
   const leftRole = modeConfig.roles.left;
   const rightRole = modeConfig.roles.right;
 
-  console.log('[Clash SW] runDebate:', { mode, leftLLM, rightLLM, leftRole, rightRole, leftPersonality, rightPersonality, setting, autoEnd, topic, roundLimit });
+  console.log('[Clash SW] runDebate:', { mode, leftLLM, rightLLM, leftRole, rightRole, leftPersonality, rightPersonality, setting, autoEnd, topic, roundLimit, effectiveLimit });
   console.log('[Clash SW] modeConfig:', JSON.stringify(modeConfig));
 
   try {
@@ -947,7 +950,7 @@ async function runDebate() {
       phase: 'left_thinking',
       leftLLM,
       rightLLM,
-      roundLimit,
+      roundLimit: effectiveLimit,
     });
 
     const leftInitialPrompt = makeInitialPrompt(topic, leftRole, mode, leftPersonality, setting, autoEnd);
@@ -993,7 +996,7 @@ async function runDebate() {
       leftLLM,
       rightLLM,
       leftResponse: leftResponse1,
-      roundLimit,
+      roundLimit: effectiveLimit,
     });
 
     const rightInitialPrompt = makeInitialWithContextPrompt(topic, rightRole, leftResponse1, mode, rightPersonality, setting, autoEnd);
@@ -1023,7 +1026,7 @@ async function runDebate() {
       rightLLM,
       leftResponse: leftResponse1,
       rightResponse: rightResponse1,
-      roundLimit,
+      roundLimit: effectiveLimit,
     });
 
     if (rightR1HasSignal) {
@@ -1047,14 +1050,14 @@ async function runDebate() {
     let lastRightResponse = rightResponse1;
 
     for (let round = 2; debateState.status === 'debating'; round++) {
-      if (roundLimit && round > roundLimit) {
+      if (round > effectiveLimit) {
         break;
       }
 
       debateState.currentRound = round;
       await persistState();
 
-      const isLastRound = roundLimit && round === roundLimit;
+      const isLastRound = round === effectiveLimit;
 
       // Left LLM responds
       notifyArena({
@@ -1063,7 +1066,7 @@ async function runDebate() {
         phase: 'left_thinking',
         leftLLM,
         rightLLM,
-        roundLimit,
+        roundLimit: effectiveLimit,
       });
 
       await sendToFrame(tabId, leftFrameId, {
@@ -1105,7 +1108,7 @@ async function runDebate() {
         leftLLM,
         rightLLM,
         leftResponse: lastLeftResponse,
-        roundLimit,
+        roundLimit: effectiveLimit,
       });
 
       await sendToFrame(tabId, rightFrameId, {
@@ -1131,7 +1134,7 @@ async function runDebate() {
         rightLLM,
         leftResponse: lastLeftResponse,
         rightResponse: lastRightResponse,
-        roundLimit,
+        roundLimit: effectiveLimit,
       });
 
       if (rightHasSignal) {
@@ -1208,6 +1211,7 @@ async function runDebateContinued() {
   const rightPersonality = debateState.rightPersonality || 'none';
   const setting = debateState.setting || '';
   const autoEnd = debateState.autoEnd;
+  const effectiveLimit = roundLimit || MAX_ROUNDS_SAFETY_CAP;
 
   // Reconstruct last responses from transcript
   let lastLeftResponse = '';
@@ -1224,7 +1228,7 @@ async function runDebateContinued() {
   try {
     // If right needs to finish a partial round (left spoke, right didn't)
     if (nextSpeaker === 'right') {
-      const isLastRound = roundLimit && round === roundLimit;
+      const isLastRound = round === effectiveLimit;
 
       notifyArena({
         type: MSG.DEBATE_UPDATE,
@@ -1233,7 +1237,7 @@ async function runDebateContinued() {
         leftLLM,
         rightLLM,
         leftResponse: lastLeftResponse,
-        roundLimit,
+        roundLimit: effectiveLimit,
       });
 
       await sendToFrame(tabId, rightFrameId, {
@@ -1258,7 +1262,7 @@ async function runDebateContinued() {
         rightLLM,
         leftResponse: lastLeftResponse,
         rightResponse: lastRightResponse,
-        roundLimit,
+        roundLimit: effectiveLimit,
       });
 
       if (rightHasSignal) {
@@ -1287,11 +1291,11 @@ async function runDebateContinued() {
 
     // Main round loop (same structure as runDebate)
     for (; debateState.status === 'debating'; round++) {
-      if (roundLimit && round > roundLimit) break;
+      if (round > effectiveLimit) break;
 
       debateState.currentRound = round;
       await persistState();
-      const isLastRound = roundLimit && round === roundLimit;
+      const isLastRound = round === effectiveLimit;
 
       // Left LLM responds
       notifyArena({
@@ -1300,7 +1304,7 @@ async function runDebateContinued() {
         phase: 'left_thinking',
         leftLLM,
         rightLLM,
-        roundLimit,
+        roundLimit: effectiveLimit,
       });
 
       await sendToFrame(tabId, leftFrameId, {
@@ -1341,7 +1345,7 @@ async function runDebateContinued() {
         leftLLM,
         rightLLM,
         leftResponse: lastLeftResponse,
-        roundLimit,
+        roundLimit: effectiveLimit,
       });
 
       await sendToFrame(tabId, rightFrameId, {
@@ -1366,7 +1370,7 @@ async function runDebateContinued() {
         rightLLM,
         leftResponse: lastLeftResponse,
         rightResponse: lastRightResponse,
-        roundLimit,
+        roundLimit: effectiveLimit,
       });
 
       if (rightHasSignal) {

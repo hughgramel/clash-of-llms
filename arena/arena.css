@@ -1065,6 +1065,12 @@ body.debate-active #debate-view {
   margin: 0;
 }
 
+.transcript-modal-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
 .transcript-close-btn {
   background: none;
   border: none;

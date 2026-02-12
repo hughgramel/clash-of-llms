@@ -39,6 +39,7 @@ const startBtnText = document.getElementById('start-btn-text');
 const settingInput = document.getElementById('setting-input');
 const autoEndCheck = document.getElementById('auto-end-check');
 const continueBtn = document.getElementById('continue-btn');
+const transcriptExportBtn = document.getElementById('transcript-export-btn');
 
 // --- Mode & Personality State ---
 
@@ -122,11 +123,13 @@ renderModeCards();
 
 // --- Transitions ---
 
-function transitionToDebate() {
+async function transitionToDebate() {
   // Load iframes now (not before) so LLM sites don't load on the landing page
-  loadIframes();
+  const iframesReady = loadIframes();
   updatePaneLabels();
   document.body.classList.add('debate-active');
+  // Wait for iframes to load before returning
+  await iframesReady;
 }
 
 function transitionToLanding() {
@@ -159,15 +162,34 @@ function transitionToLanding() {
 // --- Iframe Loading ---
 
 function loadIframe(iframe, llmKey) {
-  const config = LLM_CONFIG[llmKey];
-  if (config) {
+  return new Promise((resolve) => {
+    const config = LLM_CONFIG[llmKey];
+    if (!config) { resolve(); return; }
+
+    const onLoad = () => {
+      iframe.removeEventListener('load', onLoad);
+      console.log(`[Clash Arena] iframe loaded: ${llmKey} → ${iframe.src}`);
+      resolve();
+    };
+
+    iframe.addEventListener('load', onLoad);
     iframe.src = config.url;
-  }
+    console.log(`[Clash Arena] iframe src set: ${llmKey} → ${config.url}`);
+
+    // Fallback timeout — don't block forever if page never fires load
+    setTimeout(() => {
+      iframe.removeEventListener('load', onLoad);
+      console.warn(`[Clash Arena] iframe load timeout: ${llmKey} (current src: ${iframe.src})`);
+      resolve();
+    }, 45000);
+  });
 }
 
 function loadIframes() {
-  loadIframe(leftIframe, leftSelect.value);
-  loadIframe(rightIframe, rightSelect.value);
+  return Promise.all([
+    loadIframe(leftIframe, leftSelect.value),
+    loadIframe(rightIframe, rightSelect.value),
+  ]);
 }
 
 // --- Divider Drag Resize ---
@@ -286,7 +308,7 @@ function beginDebate() {
   port.postMessage(startMsg);
 }
 
-startBtn.addEventListener('click', () => {
+startBtn.addEventListener('click', async () => {
   const topic = topicInput.value.trim();
   if (!topic) {
     topicInput.classList.add('error');
@@ -308,7 +330,7 @@ startBtn.addEventListener('click', () => {
     turns: [],
   };
 
-  transitionToDebate();
+  await transitionToDebate();
 
   if (configureModelsCheck.checked) {
     // Show configure bar — user sets models manually, then clicks Start
@@ -323,11 +345,11 @@ configureStartBtn.addEventListener('click', () => {
   beginDebate();
 });
 
-retryBtn.addEventListener('click', () => {
+retryBtn.addEventListener('click', async () => {
   retryBtn.style.display = 'none';
   newDebateBtn.style.display = 'none';
   // Reload iframes fresh and retry
-  loadIframes();
+  await loadIframes();
   beginDebate();
 });
 
@@ -347,6 +369,7 @@ stopBtn.addEventListener('click', () => {
   if (debateData.turns.length > 0) {
     exportBtn.disabled = false;
     transcriptBtn.disabled = false;
+    saveDebateToHistory();
   }
 });
 
@@ -528,7 +551,8 @@ function escapeHtml(text) {
 
 // --- Export to PDF ---
 
-exportBtn.addEventListener('click', exportToPDF);
+exportBtn.addEventListener('click', () => exportToPDF(exportBtn));
+transcriptExportBtn.addEventListener('click', () => exportToPDF(transcriptExportBtn));
 
 function hexToRgb(hex) {
   const m = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex);
@@ -537,13 +561,14 @@ function hexToRgb(hex) {
     : [136, 136, 136];
 }
 
-function exportToPDF() {
+function exportToPDF(triggerBtn) {
   if (debateData.turns.length === 0) return;
 
   // Disable button during generation
-  exportBtn.disabled = true;
-  const origHTML = exportBtn.innerHTML;
-  exportBtn.innerHTML = `
+  const btn = triggerBtn || exportBtn;
+  btn.disabled = true;
+  const origHTML = btn.innerHTML;
+  btn.innerHTML = `
     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83"/></svg>
     Saving...
   `;
@@ -571,13 +596,10 @@ function exportToPDF() {
     const totalRounds = debateData.turns.length > 0
       ? debateData.turns[debateData.turns.length - 1].round
       : 0;
-    const dateStr = debateData.startTime
-      ? debateData.startTime.toLocaleDateString('en-US', {
-          year: 'numeric', month: 'long', day: 'numeric',
-        })
-      : new Date().toLocaleDateString('en-US', {
-          year: 'numeric', month: 'long', day: 'numeric',
-        });
+    const startDate = debateData.startTime ? new Date(debateData.startTime) : new Date();
+    const dateStr = startDate.toLocaleDateString('en-US', {
+      year: 'numeric', month: 'long', day: 'numeric',
+    });
 
     // --- Header ---
     doc.setFont('helvetica', 'bold');
@@ -736,8 +758,8 @@ function exportToPDF() {
   } catch (err) {
     console.error('PDF export failed:', err);
   } finally {
-    exportBtn.disabled = false;
-    exportBtn.innerHTML = origHTML;
+    btn.disabled = false;
+    btn.innerHTML = origHTML;
   }
 }
 
@@ -854,41 +876,9 @@ function viewHistoryEntry(entry) {
     turns: entry.turns,
   };
 
-  // Transition to debate view in read-only completed state
-  updatePaneLabels();
-  document.body.classList.add('debate-active');
-
-  // Set iframes to blank (no live LLMs for history view)
-  leftIframe.src = 'about:blank';
-  rightIframe.src = 'about:blank';
-
-  // Update header
-  const leftConfig = LLM_CONFIG[entry.leftLLM];
-  const rightConfig = LLM_CONFIG[entry.rightLLM];
-  if (leftConfig) {
-    leftLabel.textContent = leftConfig.name;
-    headerLeftName.textContent = leftConfig.name;
-  }
-  if (rightConfig) {
-    rightLabel.textContent = rightConfig.name;
-    headerRightName.textContent = rightConfig.name;
-  }
-
-  // Show completed state
-  statusText.textContent = 'Complete';
-  statusPill.className = 'status-pill complete';
-  const rounds = Math.ceil(entry.turns.length / 2);
-  roundCounter.textContent = entry.roundLimit ? `${rounds} / ${entry.roundLimit}` : `${rounds}`;
-  stopBtn.style.display = 'none';
-  retryBtn.style.display = 'none';
-  newDebateBtn.style.display = '';
-  exportBtn.disabled = false;
-  transcriptBtn.disabled = false;
-
   // Populate transcript
   transcriptContent.innerHTML = '';
   transcriptTurnNum = 0;
-  const modeConfig = INTERACTION_MODES[entry.mode] || INTERACTION_MODES.debate;
   for (let i = 0; i < entry.turns.length; i += 2) {
     const left = entry.turns[i];
     const right = entry.turns[i + 1];
@@ -903,7 +893,7 @@ function viewHistoryEntry(entry) {
     }
   }
 
-  // Auto-open transcript modal for history view
+  // Open transcript modal on top of landing page
   openTranscriptModal();
 }
 
