@@ -31,6 +31,7 @@
     "https://*.claude.ai/*",
     "https://grok.com/*",
     "https://gemini.google.com/*",
+    "https://ogs.google.com/*",
     "https://accounts.google.com/*",
     "https://www.perplexity.ai/*"
   ],

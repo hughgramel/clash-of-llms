@@ -27,9 +27,8 @@
       'structured-content-container .markdown',
     ],
     streamingIndicator: [
-      'structured-content-container.processing-state-visible',
-      'div[class*="loading"]',
       'mat-progress-bar',
+      'div[class*="loading"]',
       'div[class*="thinking"]',
     ],
   };
@@ -90,8 +89,18 @@
     },
 
     async isStreaming() {
+      // Stop button visible = definitely streaming
       const stopBtn = findFirst(SELECTORS.stopButton);
       if (stopBtn && stopBtn.offsetParent !== null) return true;
+
+      // If the most recent response footer has "complete", streaming is done
+      const footers = document.querySelectorAll('.response-footer, div[class*="response-footer"]');
+      if (footers.length > 0) {
+        const lastFooter = footers[footers.length - 1];
+        if (lastFooter.classList.contains('complete')) return false;
+      }
+
+      // Fallback to other streaming indicators
       return findFirst(SELECTORS.streamingIndicator) !== null;
     },
 

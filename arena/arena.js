@@ -24,8 +24,10 @@ const newDebateBtn = document.getElementById('new-debate-btn');
 const statusText = document.getElementById('status-text');
 const roundCounter = document.getElementById('round-counter');
 const statusPill = document.getElementById('status-pill');
-const toggleTranscript = document.getElementById('toggle-transcript');
-const transcriptPanel = document.getElementById('transcript-panel');
+const transcriptBtn = document.getElementById('transcript-btn');
+const transcriptModal = document.getElementById('transcript-modal');
+const transcriptCloseBtn = document.getElementById('transcript-close-btn');
+const transcriptBackdrop = transcriptModal.querySelector('.transcript-modal-backdrop');
 const transcriptContent = document.getElementById('transcript-content');
 const configureModelsCheck = document.getElementById('configure-models-check');
 const configureBar = document.getElementById('configure-bar');
@@ -35,6 +37,8 @@ const leftPersonalityInput = document.getElementById('left-personality-input');
 const rightPersonalityInput = document.getElementById('right-personality-input');
 const startBtnText = document.getElementById('start-btn-text');
 const settingInput = document.getElementById('setting-input');
+const autoEndCheck = document.getElementById('auto-end-check');
+const continueBtn = document.getElementById('continue-btn');
 
 // --- Mode & Personality State ---
 
@@ -49,6 +53,7 @@ let debateData = {
   roundLimit: null,
   startTime: null,
   mode: 'debate',
+  autoEnd: true,
   turns: [],
 };
 
@@ -133,11 +138,14 @@ function transitionToLanding() {
   roundLimitInput.value = '';
   stopBtn.style.display = '';
   newDebateBtn.style.display = 'none';
+  continueBtn.style.display = 'none';
   exportBtn.disabled = true;
+  transcriptBtn.disabled = true;
   configureBar.classList.add('hidden');
   leftPersonalityInput.value = '';
   rightPersonalityInput.value = '';
   settingInput.value = '';
+  autoEndCheck.checked = true;
 
   // Reset mode to default
   currentMode = 'debate';
@@ -197,18 +205,19 @@ document.addEventListener('mouseup', () => {
   }
 });
 
-// --- Transcript Panel Toggle ---
+// --- Transcript Modal ---
 
-const toggleTranscriptLabel = toggleTranscript.querySelector('span');
+function openTranscriptModal() {
+  transcriptModal.classList.remove('hidden');
+}
 
-toggleTranscript.addEventListener('click', () => {
-  const isCollapsed = transcriptPanel.classList.contains('collapsed');
-  transcriptPanel.classList.toggle('collapsed', !isCollapsed);
-  transcriptPanel.classList.toggle('expanded', isCollapsed);
-  if (toggleTranscriptLabel) {
-    toggleTranscriptLabel.textContent = isCollapsed ? 'Hide Transcript' : 'Show Transcript';
-  }
-});
+function closeTranscriptModal() {
+  transcriptModal.classList.add('hidden');
+}
+
+transcriptBtn.addEventListener('click', openTranscriptModal);
+transcriptCloseBtn.addEventListener('click', closeTranscriptModal);
+transcriptBackdrop.addEventListener('click', closeTranscriptModal);
 
 // --- Service Worker Communication ---
 
@@ -254,9 +263,11 @@ function beginDebate() {
   transcriptContent.innerHTML = '';
   transcriptTurnNum = 0;
   exportBtn.disabled = true;
+  transcriptBtn.disabled = true;
   stopBtn.style.display = '';
   retryBtn.style.display = 'none';
   newDebateBtn.style.display = 'none';
+  continueBtn.style.display = 'none';
   configureBar.classList.add('hidden');
 
   const startMsg = {
@@ -266,6 +277,7 @@ function beginDebate() {
     leftLLM: debateData.leftLLM,
     rightLLM: debateData.rightLLM,
     mode: debateData.mode,
+    autoEnd: debateData.autoEnd,
     leftPersonality: leftPersonalityInput.value.trim() || '',
     rightPersonality: rightPersonalityInput.value.trim() || '',
     setting: settingInput.value.trim() || '',
@@ -292,6 +304,7 @@ startBtn.addEventListener('click', () => {
     roundLimit,
     startTime: new Date(),
     mode: currentMode,
+    autoEnd: autoEndCheck.checked,
     turns: [],
   };
 
@@ -329,10 +342,23 @@ stopBtn.addEventListener('click', () => {
   rightStatus.textContent = '';
   rightStatus.className = 'pane-status';
   stopBtn.style.display = 'none';
+  continueBtn.style.display = 'none';
   newDebateBtn.style.display = '';
   if (debateData.turns.length > 0) {
     exportBtn.disabled = false;
+    transcriptBtn.disabled = false;
   }
+});
+
+// --- Continue Debate ---
+
+continueBtn.addEventListener('click', () => {
+  continueBtn.style.display = 'none';
+  newDebateBtn.style.display = 'none';
+  stopBtn.style.display = '';
+  statusText.textContent = 'Resuming...';
+  statusPill.className = 'status-pill debating';
+  port.postMessage({ type: MSG.CONTINUE_DEBATE });
 });
 
 // --- New Debate ---
@@ -384,20 +410,47 @@ function handleDebateUpdate(msg) {
     });
 
     appendTranscriptRound(round, msg.leftLLM, leftResponse, msg.rightLLM, rightResponse);
+    transcriptBtn.disabled = false;
   }
 }
 
 function handleDebateComplete(msg) {
-  statusText.textContent = 'Complete';
-  statusPill.className = 'status-pill complete';
   leftStatus.textContent = '';
   leftStatus.className = 'pane-status';
   rightStatus.textContent = '';
   rightStatus.className = 'pane-status';
-  exportBtn.disabled = false;
   stopBtn.style.display = 'none';
   retryBtn.style.display = 'none';
-  newDebateBtn.style.display = '';
+
+  if (msg.reason === 'natural_end') {
+    statusText.textContent = 'Conversation Ended';
+    statusPill.className = 'status-pill complete';
+    continueBtn.style.display = '';
+    newDebateBtn.style.display = '';
+  } else {
+    statusText.textContent = 'Complete';
+    statusPill.className = 'status-pill complete';
+    continueBtn.style.display = 'none';
+    newDebateBtn.style.display = '';
+  }
+
+  // Handle partial round (left spoke but right didn't before auto-end)
+  if (msg.partialTurn) {
+    const modeConfig = INTERACTION_MODES[debateData.mode] || INTERACTION_MODES.debate;
+    const turnNum = debateData.turns.length + 1;
+    debateData.turns.push({
+      turn: turnNum,
+      round: msg.partialTurn.round,
+      speaker: msg.partialTurn.speaker,
+      position: msg.partialTurn.speaker === debateData.leftLLM ? modeConfig.roles.left : modeConfig.roles.right,
+      text: msg.partialTurn.text,
+    });
+    appendPartialTranscriptTurn(msg.partialTurn.round, msg.partialTurn.speaker, msg.partialTurn.text);
+  }
+
+  exportBtn.disabled = false;
+  transcriptBtn.disabled = debateData.turns.length === 0;
+  saveDebateToHistory();
 }
 
 function handleDebateError(msg) {
@@ -408,10 +461,12 @@ function handleDebateError(msg) {
   rightStatus.textContent = '';
   rightStatus.className = 'pane-status';
   stopBtn.style.display = 'none';
+  continueBtn.style.display = 'none';
   retryBtn.style.display = '';
   newDebateBtn.style.display = '';
   if (debateData.turns.length > 0) {
     exportBtn.disabled = false;
+    transcriptBtn.disabled = false;
   }
 }
 
@@ -442,6 +497,25 @@ function appendTranscriptRound(round, leftLLM, leftText, rightLLM, rightText) {
     </div>
   `;
 
+  transcriptContent.appendChild(roundDiv);
+  transcriptContent.scrollTop = transcriptContent.scrollHeight;
+}
+
+function appendPartialTranscriptTurn(round, speaker, text) {
+  const roundDiv = document.createElement('div');
+  roundDiv.className = 'transcript-round';
+  const speakerName = LLM_CONFIG[speaker]?.name || speaker;
+  const modeConfig = INTERACTION_MODES[debateData.mode] || INTERACTION_MODES.debate;
+  const position = speaker === debateData.leftLLM ? modeConfig.roles.left : modeConfig.roles.right;
+  const turnNum = ++transcriptTurnNum;
+
+  roundDiv.innerHTML = `
+    <div class="transcript-round-header">Round ${round} (partial)</div>
+    <div class="transcript-entry">
+      <div class="transcript-speaker">Turn #${turnNum} — ${speakerName} (${position})</div>
+      <div class="transcript-text">${escapeHtml(text || '...')}</div>
+    </div>
+  `;
   transcriptContent.appendChild(roundDiv);
   transcriptContent.scrollTop = transcriptContent.scrollHeight;
 }
@@ -666,3 +740,188 @@ function exportToPDF() {
     exportBtn.innerHTML = origHTML;
   }
 }
+
+// --- Debate History ---
+
+const HISTORY_KEY = 'clash_of_llms_history';
+const HISTORY_MAX = 50;
+
+const historyBtn = document.getElementById('history-btn');
+const historyModal = document.getElementById('history-modal');
+const historyCloseBtn = document.getElementById('history-close-btn');
+const historyList = document.getElementById('history-list');
+const historyBackdrop = historyModal.querySelector('.history-modal-backdrop');
+
+function loadHistory() {
+  try {
+    return JSON.parse(localStorage.getItem(HISTORY_KEY)) || [];
+  } catch (e) {
+    return [];
+  }
+}
+
+function saveHistory(history) {
+  localStorage.setItem(HISTORY_KEY, JSON.stringify(history));
+}
+
+function saveDebateToHistory() {
+  if (!debateData.turns.length) return;
+  const entry = {
+    id: Date.now(),
+    topic: debateData.topic,
+    leftLLM: debateData.leftLLM,
+    rightLLM: debateData.rightLLM,
+    mode: debateData.mode,
+    startTime: debateData.startTime,
+    turns: debateData.turns,
+    roundLimit: debateData.roundLimit,
+    savedAt: new Date().toISOString(),
+  };
+  const history = loadHistory();
+  history.unshift(entry);
+  if (history.length > HISTORY_MAX) history.length = HISTORY_MAX;
+  saveHistory(history);
+}
+
+function formatDate(dateStr) {
+  try {
+    const d = new Date(dateStr);
+    return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
+      + ' ' + d.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
+  } catch (e) {
+    return '';
+  }
+}
+
+function renderHistoryModal() {
+  const history = loadHistory();
+  historyList.innerHTML = '';
+
+  if (history.length === 0) {
+    historyList.innerHTML = '<div class="history-empty">No past sessions yet.</div>';
+    return;
+  }
+
+  for (const entry of history) {
+    const card = document.createElement('div');
+    card.className = 'history-card';
+
+    const leftName = LLM_CONFIG[entry.leftLLM]?.name || entry.leftLLM;
+    const rightName = LLM_CONFIG[entry.rightLLM]?.name || entry.rightLLM;
+    const modeLabel = (INTERACTION_MODES[entry.mode] || INTERACTION_MODES.debate).label;
+    const rounds = entry.turns.length ? Math.ceil(entry.turns.length / 2) : 0;
+
+    card.innerHTML = `
+      <div class="history-card-body">
+        <div class="history-card-topic">${escapeHtml(entry.topic)}</div>
+        <div class="history-card-meta">
+          <span>${leftName} vs ${rightName}</span>
+          <span class="sep">&middot;</span>
+          <span>${modeLabel}</span>
+          <span class="sep">&middot;</span>
+          <span>${rounds} round${rounds !== 1 ? 's' : ''}</span>
+          <span class="sep">&middot;</span>
+          <span>${formatDate(entry.savedAt || entry.startTime)}</span>
+        </div>
+      </div>
+      <button class="history-card-delete" title="Delete">&times;</button>
+    `;
+
+    card.querySelector('.history-card-body').addEventListener('click', () => {
+      viewHistoryEntry(entry);
+    });
+
+    card.querySelector('.history-card-delete').addEventListener('click', (e) => {
+      e.stopPropagation();
+      deleteHistoryEntry(entry.id);
+    });
+
+    historyList.appendChild(card);
+  }
+}
+
+function viewHistoryEntry(entry) {
+  closeHistoryModal();
+
+  // Populate debateData so export works
+  debateData = {
+    topic: entry.topic,
+    leftLLM: entry.leftLLM,
+    rightLLM: entry.rightLLM,
+    roundLimit: entry.roundLimit,
+    startTime: entry.startTime,
+    mode: entry.mode,
+    turns: entry.turns,
+  };
+
+  // Transition to debate view in read-only completed state
+  updatePaneLabels();
+  document.body.classList.add('debate-active');
+
+  // Set iframes to blank (no live LLMs for history view)
+  leftIframe.src = 'about:blank';
+  rightIframe.src = 'about:blank';
+
+  // Update header
+  const leftConfig = LLM_CONFIG[entry.leftLLM];
+  const rightConfig = LLM_CONFIG[entry.rightLLM];
+  if (leftConfig) {
+    leftLabel.textContent = leftConfig.name;
+    headerLeftName.textContent = leftConfig.name;
+  }
+  if (rightConfig) {
+    rightLabel.textContent = rightConfig.name;
+    headerRightName.textContent = rightConfig.name;
+  }
+
+  // Show completed state
+  statusText.textContent = 'Complete';
+  statusPill.className = 'status-pill complete';
+  const rounds = Math.ceil(entry.turns.length / 2);
+  roundCounter.textContent = entry.roundLimit ? `${rounds} / ${entry.roundLimit}` : `${rounds}`;
+  stopBtn.style.display = 'none';
+  retryBtn.style.display = 'none';
+  newDebateBtn.style.display = '';
+  exportBtn.disabled = false;
+  transcriptBtn.disabled = false;
+
+  // Populate transcript
+  transcriptContent.innerHTML = '';
+  transcriptTurnNum = 0;
+  const modeConfig = INTERACTION_MODES[entry.mode] || INTERACTION_MODES.debate;
+  for (let i = 0; i < entry.turns.length; i += 2) {
+    const left = entry.turns[i];
+    const right = entry.turns[i + 1];
+    if (left) {
+      appendTranscriptRound(
+        left.round,
+        left.speaker,
+        left.text,
+        right ? right.speaker : entry.rightLLM,
+        right ? right.text : ''
+      );
+    }
+  }
+
+  // Auto-open transcript modal for history view
+  openTranscriptModal();
+}
+
+function deleteHistoryEntry(id) {
+  const history = loadHistory().filter((e) => e.id !== id);
+  saveHistory(history);
+  renderHistoryModal();
+}
+
+function openHistoryModal() {
+  renderHistoryModal();
+  historyModal.classList.remove('hidden');
+}
+
+function closeHistoryModal() {
+  historyModal.classList.add('hidden');
+}
+
+historyBtn.addEventListener('click', openHistoryModal);
+historyCloseBtn.addEventListener('click', closeHistoryModal);
+historyBackdrop.addEventListener('click', closeHistoryModal);

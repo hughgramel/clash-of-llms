@@ -16,6 +16,8 @@ let debateState = {
   rightFrameId: null,
   tabId: null,
   transcript: [],
+  autoEnd: true,
+  nextSpeaker: 'left',
 };
 
 let arenaPort = null;
@@ -77,6 +79,10 @@ async function handleArenaMessage(msg, port) {
     case MSG.STOP_DEBATE:
       debateState.status = 'stopped';
       await persistState();
+      break;
+
+    case MSG.CONTINUE_DEBATE:
+      await continueDebate();
       break;
 
     case MSG.GET_STATUS:
@@ -155,10 +161,44 @@ function sendToFrame(tabId, frameId, message) {
   });
 }
 
+// --- Programmatic Script Injection ---
+
+// Maps LLM key to the content scripts that should be injected
+const LLM_CONTENT_SCRIPTS = {
+  chatgpt: ['shared/constants.js', 'content-scripts/adapter-interface.js', 'content-scripts/chatgpt-adapter.js'],
+  claude: ['shared/constants.js', 'content-scripts/adapter-interface.js', 'content-scripts/claude-adapter.js'],
+  grok: ['shared/constants.js', 'content-scripts/adapter-interface.js', 'content-scripts/grok-adapter.js'],
+  gemini: ['shared/constants.js', 'content-scripts/adapter-interface.js', 'content-scripts/gemini-adapter.js'],
+  perplexity: ['shared/constants.js', 'content-scripts/adapter-interface.js', 'content-scripts/perplexity-adapter.js'],
+};
+
+async function injectContentScripts(tabId, frameId, llmKey) {
+  const scripts = LLM_CONTENT_SCRIPTS[llmKey];
+  if (!scripts) {
+    console.warn(`[Clash SW] No content scripts defined for ${llmKey}`);
+    return;
+  }
+  console.log(`[Clash SW] Programmatically injecting content scripts for ${llmKey} into frame ${frameId}`);
+  try {
+    await chrome.scripting.executeScript({
+      target: { tabId, frameIds: [frameId] },
+      files: scripts,
+    });
+    console.log(`[Clash SW] Successfully injected scripts for ${llmKey}`);
+  } catch (e) {
+    console.error(`[Clash SW] Failed to inject scripts for ${llmKey}:`, e.message);
+  }
+}
+
 // --- Wait for Adapter Ready ---
 
 async function waitForAdapterReady(tabId, frameId, name, maxRetries = 30) {
   console.log(`[Clash SW] waitForAdapterReady: ${name} (frame=${frameId})`);
+
+  // Determine which LLM key this is for programmatic injection
+  const llmKey = Object.keys(LLM_CONFIG).find(k => LLM_CONFIG[k].name === name);
+  let injected = false;
+
   for (let i = 0; i < maxRetries; i++) {
     try {
       const result = await sendToFrame(tabId, frameId, { type: 'IS_READY' });
@@ -168,6 +208,13 @@ async function waitForAdapterReady(tabId, frameId, name, maxRetries = 30) {
       }
     } catch (e) {
       if (i % 5 === 0) console.log(`[Clash SW] ${name} adapter not ready yet (attempt ${i + 1}/${maxRetries}): ${e.message}`);
+
+      // After 5 failed attempts with "Could not establish connection", try programmatic injection
+      if (!injected && i >= 4 && llmKey && e.message.includes('Could not establish connection')) {
+        console.log(`[Clash SW] Content script not present for ${name}, attempting programmatic injection...`);
+        await injectContentScripts(tabId, frameId, llmKey);
+        injected = true;
+      }
     }
     await new Promise((r) => setTimeout(r, 2000));
   }
@@ -618,23 +665,43 @@ function applySetting(promptText, setting) {
   return promptText + '\n\nSETTING/CONTEXT: ' + setting;
 }
 
+// --- Auto-End Signal ---
+
+const AUTO_END_SIGNAL = '[DISCUSSION COMPLETE]';
+
+function hasAutoEndSignal(text) {
+  return text && text.includes(AUTO_END_SIGNAL);
+}
+
+function stripAutoEndSignal(text) {
+  if (!text) return text;
+  return text.replace(/\s*\[DISCUSSION COMPLETE\]\s*/g, '').trim();
+}
+
+function applyAutoEnd(promptText, autoEnd) {
+  if (!autoEnd) return promptText;
+  return promptText + '\n\nIMPORTANT: If you believe the discussion has reached a natural conclusion — all key points have been made, positions are clear, and further rounds would be repetitive — end your response with the exact string [DISCUSSION COMPLETE] on its own line. Only do this when the conversation has genuinely run its course.';
+}
+
 // --- Prompt Construction ---
 
-function makeInitialPrompt(topic, roleName, mode, personalityKey, setting) {
+function makeInitialPrompt(topic, roleName, mode, personalityKey, setting, autoEnd) {
   const prompts = MODE_PROMPTS[mode] || MODE_PROMPTS.debate;
   let text = prompts.makeInitial(topic, roleName);
   text = applySetting(text, setting);
-  return applyPersonality(text, personalityKey);
+  text = applyPersonality(text, personalityKey);
+  return applyAutoEnd(text, autoEnd);
 }
 
-function makeInitialWithContextPrompt(topic, roleName, opponentText, mode, personalityKey, setting) {
+function makeInitialWithContextPrompt(topic, roleName, opponentText, mode, personalityKey, setting, autoEnd) {
   const prompts = MODE_PROMPTS[mode] || MODE_PROMPTS.debate;
   let text = prompts.makeInitialWithContext(topic, roleName, opponentText);
   text = applySetting(text, setting);
-  return applyPersonality(text, personalityKey);
+  text = applyPersonality(text, personalityKey);
+  return applyAutoEnd(text, autoEnd);
 }
 
-function makeFollowupPrompt(topic, opponentText, roundNum, mode, personalityKey, isLastRound, setting) {
+function makeFollowupPrompt(topic, opponentText, roundNum, mode, personalityKey, isLastRound, setting, autoEnd) {
   const prompts = MODE_PROMPTS[mode] || MODE_PROMPTS.debate;
   let text;
   if (mode === 'truth' || mode === 'collaborative' || mode === 'writers_room') {
@@ -643,7 +710,8 @@ function makeFollowupPrompt(topic, opponentText, roundNum, mode, personalityKey,
     text = prompts.makeFollowup(topic, opponentText, roundNum);
   }
   text = applySetting(text, setting);
-  return applyPersonality(text, personalityKey);
+  text = applyPersonality(text, personalityKey);
+  return applyAutoEnd(text, autoEnd);
 }
 
 // --- Keep-Alive Alarm ---
@@ -748,17 +816,19 @@ async function fetchModelsForSide(tabId, frameId, llmKey, side) {
 
 // --- Main Debate Flow ---
 
-async function startDebate({ topic, roundLimit, leftLLM, rightLLM, leftModel, rightModel, mode, leftPersonality, rightPersonality, setting }) {
-  console.log('[Clash SW] startDebate called with:', { topic, roundLimit, leftLLM, rightLLM, leftModel, rightModel, mode, leftPersonality, rightPersonality, setting });
+async function startDebate({ topic, roundLimit, leftLLM, rightLLM, leftModel, rightModel, mode, leftPersonality, rightPersonality, setting, autoEnd }) {
+  console.log('[Clash SW] startDebate called with:', { topic, roundLimit, leftLLM, rightLLM, leftModel, rightModel, mode, leftPersonality, rightPersonality, setting, autoEnd });
   try {
-    // Preserve preloaded frame IDs if LLMs haven't changed
-    const preloadedLeftFrame = (debateState.leftLLM === leftLLM) ? debateState.leftFrameId : null;
-    const preloadedRightFrame = (debateState.rightLLM === rightLLM) ? debateState.rightFrameId : null;
-    console.log('[Clash SW] preloaded frames:', { preloadedLeftFrame, preloadedRightFrame, currentLeftLLM: debateState.leftLLM, currentRightLLM: debateState.rightLLM });
-
     // Always get fresh tab ID to avoid stale state
     const tabId = await getCurrentArenaTabId();
-    console.log('[Clash SW] fresh tabId:', tabId);
+    console.log('[Clash SW] fresh tabId:', tabId, '(previous:', debateState.tabId, ')');
+
+    // Only preserve preloaded frame IDs if SAME tab AND same LLM
+    // Frame IDs are only valid within a specific tab
+    const sameTab = tabId === debateState.tabId;
+    const preloadedLeftFrame = (sameTab && debateState.leftLLM === leftLLM) ? debateState.leftFrameId : null;
+    const preloadedRightFrame = (sameTab && debateState.rightLLM === rightLLM) ? debateState.rightFrameId : null;
+    console.log('[Clash SW] preloaded frames:', { preloadedLeftFrame, preloadedRightFrame, sameTab });
 
     debateState = {
       status: 'preparing',
@@ -775,6 +845,8 @@ async function startDebate({ topic, roundLimit, leftLLM, rightLLM, leftModel, ri
       leftPersonality: leftPersonality || 'none',
       rightPersonality: rightPersonality || 'none',
       setting: setting || '',
+      autoEnd: autoEnd !== undefined ? autoEnd : true,
+      nextSpeaker: 'left',
     };
     await persistState();
 
@@ -857,11 +929,12 @@ async function runDebate() {
   const leftPersonality = debateState.leftPersonality || 'none';
   const rightPersonality = debateState.rightPersonality || 'none';
   const setting = debateState.setting || '';
+  const autoEnd = debateState.autoEnd;
   const modeConfig = INTERACTION_MODES[mode] || INTERACTION_MODES.debate;
   const leftRole = modeConfig.roles.left;
   const rightRole = modeConfig.roles.right;
 
-  console.log('[Clash SW] runDebate:', { mode, leftLLM, rightLLM, leftRole, rightRole, leftPersonality, rightPersonality, setting, topic, roundLimit });
+  console.log('[Clash SW] runDebate:', { mode, leftLLM, rightLLM, leftRole, rightRole, leftPersonality, rightPersonality, setting, autoEnd, topic, roundLimit });
   console.log('[Clash SW] modeConfig:', JSON.stringify(modeConfig));
 
   try {
@@ -877,7 +950,7 @@ async function runDebate() {
       roundLimit,
     });
 
-    const leftInitialPrompt = makeInitialPrompt(topic, leftRole, mode, leftPersonality, setting);
+    const leftInitialPrompt = makeInitialPrompt(topic, leftRole, mode, leftPersonality, setting, autoEnd);
     console.log('[Clash SW] Sending initial prompt to LEFT:', leftInitialPrompt.substring(0, 200) + '...');
     await sendToFrame(tabId, leftFrameId, {
       type: 'SEND_MESSAGE',
@@ -886,10 +959,29 @@ async function runDebate() {
 
     console.log('[Clash SW] Waiting for LEFT response...');
     const leftR1 = await sendToFrame(tabId, leftFrameId, { type: 'WAIT_FOR_RESPONSE' });
-    const leftResponse1 = leftR1.response;
+    let leftResponse1 = leftR1.response;
     console.log('[Clash SW] LEFT response received:', (leftResponse1 || '').substring(0, 200) + '...');
+
+    // Auto-end check: left R1
+    const leftR1HasSignal = autoEnd && hasAutoEndSignal(leftResponse1);
+    if (leftR1HasSignal) leftResponse1 = stripAutoEndSignal(leftResponse1);
+
     debateState.transcript.push({ round: 1, speaker: leftLLM, text: leftResponse1 });
     await persistState();
+
+    if (leftR1HasSignal) {
+      debateState.status = 'completed';
+      debateState.nextSpeaker = 'right';
+      await persistState();
+      stopKeepAlive();
+      notifyArena({
+        type: MSG.DEBATE_COMPLETE,
+        transcript: debateState.transcript,
+        reason: 'natural_end',
+        partialTurn: { round: 1, speaker: leftLLM, text: leftResponse1 },
+      });
+      return;
+    }
 
     if (debateState.status !== 'debating') return;
 
@@ -904,7 +996,7 @@ async function runDebate() {
       roundLimit,
     });
 
-    const rightInitialPrompt = makeInitialWithContextPrompt(topic, rightRole, leftResponse1, mode, rightPersonality, setting);
+    const rightInitialPrompt = makeInitialWithContextPrompt(topic, rightRole, leftResponse1, mode, rightPersonality, setting, autoEnd);
     console.log('[Clash SW] Sending initial+context prompt to RIGHT:', rightInitialPrompt.substring(0, 200) + '...');
     await sendToFrame(tabId, rightFrameId, {
       type: 'SEND_MESSAGE',
@@ -913,8 +1005,13 @@ async function runDebate() {
 
     console.log('[Clash SW] Waiting for RIGHT response...');
     const rightR1 = await sendToFrame(tabId, rightFrameId, { type: 'WAIT_FOR_RESPONSE' });
-    const rightResponse1 = rightR1.response;
+    let rightResponse1 = rightR1.response;
     console.log('[Clash SW] RIGHT response received:', (rightResponse1 || '').substring(0, 200) + '...');
+
+    // Auto-end check: right R1
+    const rightR1HasSignal = autoEnd && hasAutoEndSignal(rightResponse1);
+    if (rightR1HasSignal) rightResponse1 = stripAutoEndSignal(rightResponse1);
+
     debateState.transcript.push({ round: 1, speaker: rightLLM, text: rightResponse1 });
     await persistState();
 
@@ -928,6 +1025,19 @@ async function runDebate() {
       rightResponse: rightResponse1,
       roundLimit,
     });
+
+    if (rightR1HasSignal) {
+      debateState.status = 'completed';
+      debateState.nextSpeaker = 'left';
+      await persistState();
+      stopKeepAlive();
+      notifyArena({
+        type: MSG.DEBATE_COMPLETE,
+        transcript: debateState.transcript,
+        reason: 'natural_end',
+      });
+      return;
+    }
 
     if (debateState.status !== 'debating') return;
 
@@ -958,13 +1068,32 @@ async function runDebate() {
 
       await sendToFrame(tabId, leftFrameId, {
         type: 'SEND_MESSAGE',
-        text: makeFollowupPrompt(topic, lastRightResponse, round, mode, leftPersonality, isLastRound, setting),
+        text: makeFollowupPrompt(topic, lastRightResponse, round, mode, leftPersonality, isLastRound, setting, autoEnd),
       });
 
       const leftR = await sendToFrame(tabId, leftFrameId, { type: 'WAIT_FOR_RESPONSE' });
       lastLeftResponse = leftR.response;
+
+      // Auto-end check: left in loop
+      const leftHasSignal = autoEnd && hasAutoEndSignal(lastLeftResponse);
+      if (leftHasSignal) lastLeftResponse = stripAutoEndSignal(lastLeftResponse);
+
       debateState.transcript.push({ round, speaker: leftLLM, text: lastLeftResponse });
       await persistState();
+
+      if (leftHasSignal) {
+        debateState.status = 'completed';
+        debateState.nextSpeaker = 'right';
+        await persistState();
+        stopKeepAlive();
+        notifyArena({
+          type: MSG.DEBATE_COMPLETE,
+          transcript: debateState.transcript,
+          reason: 'natural_end',
+          partialTurn: { round, speaker: leftLLM, text: lastLeftResponse },
+        });
+        return;
+      }
 
       if (debateState.status !== 'debating') break;
 
@@ -981,11 +1110,16 @@ async function runDebate() {
 
       await sendToFrame(tabId, rightFrameId, {
         type: 'SEND_MESSAGE',
-        text: makeFollowupPrompt(topic, lastLeftResponse, round, mode, rightPersonality, isLastRound, setting),
+        text: makeFollowupPrompt(topic, lastLeftResponse, round, mode, rightPersonality, isLastRound, setting, autoEnd),
       });
 
       const rightR = await sendToFrame(tabId, rightFrameId, { type: 'WAIT_FOR_RESPONSE' });
       lastRightResponse = rightR.response;
+
+      // Auto-end check: right in loop
+      const rightHasSignal = autoEnd && hasAutoEndSignal(lastRightResponse);
+      if (rightHasSignal) lastRightResponse = stripAutoEndSignal(lastRightResponse);
+
       debateState.transcript.push({ round, speaker: rightLLM, text: lastRightResponse });
       await persistState();
 
@@ -999,18 +1133,260 @@ async function runDebate() {
         rightResponse: lastRightResponse,
         roundLimit,
       });
+
+      if (rightHasSignal) {
+        debateState.status = 'completed';
+        debateState.nextSpeaker = 'left';
+        await persistState();
+        stopKeepAlive();
+        notifyArena({
+          type: MSG.DEBATE_COMPLETE,
+          transcript: debateState.transcript,
+          reason: 'natural_end',
+        });
+        return;
+      }
     }
 
-    // Debate finished
+    // Debate finished (round limit or stopped)
+    const reason = (debateState.status === 'stopped') ? 'stopped' : 'round_limit';
     debateState.status = 'completed';
     await persistState();
     stopKeepAlive();
     notifyArena({
       type: MSG.DEBATE_COMPLETE,
       transcript: debateState.transcript,
+      reason,
     });
   } catch (err) {
     console.error('[Clash SW] runDebate error:', err.message, err.stack);
+    debateState.status = 'error';
+    await persistState();
+    stopKeepAlive();
+    notifyArena({ type: MSG.DEBATE_ERROR, error: err.message });
+  }
+}
+
+// --- Continue Debate ---
+
+async function continueDebate() {
+  console.log('[Clash SW] continueDebate called, nextSpeaker:', debateState.nextSpeaker);
+  try {
+    const { tabId, leftFrameId, rightFrameId, leftLLM, rightLLM } = debateState;
+
+    if (!tabId || !leftFrameId || !rightFrameId) {
+      throw new Error('Cannot continue: frame state is missing. Start a new debate.');
+    }
+
+    const leftName = LLM_CONFIG[leftLLM].name;
+    const rightName = LLM_CONFIG[rightLLM].name;
+
+    // Quick check that adapters are still responsive
+    await Promise.all([
+      waitForAdapterReady(tabId, leftFrameId, leftName, 5),
+      waitForAdapterReady(tabId, rightFrameId, rightName, 5),
+    ]);
+
+    debateState.status = 'debating';
+    await persistState();
+    startKeepAlive();
+
+    await runDebateContinued();
+  } catch (err) {
+    console.error('[Clash SW] continueDebate error:', err.message, err.stack);
+    debateState.status = 'error';
+    await persistState();
+    stopKeepAlive();
+    notifyArena({ type: MSG.DEBATE_ERROR, error: err.message });
+  }
+}
+
+async function runDebateContinued() {
+  const { tabId, leftFrameId, rightFrameId, topic, roundLimit, leftLLM, rightLLM, transcript, nextSpeaker } = debateState;
+  const mode = debateState.mode || 'debate';
+  const leftPersonality = debateState.leftPersonality || 'none';
+  const rightPersonality = debateState.rightPersonality || 'none';
+  const setting = debateState.setting || '';
+  const autoEnd = debateState.autoEnd;
+
+  // Reconstruct last responses from transcript
+  let lastLeftResponse = '';
+  let lastRightResponse = '';
+  for (let i = transcript.length - 1; i >= 0; i--) {
+    if (!lastRightResponse && transcript[i].speaker === rightLLM) lastRightResponse = transcript[i].text;
+    if (!lastLeftResponse && transcript[i].speaker === leftLLM) lastLeftResponse = transcript[i].text;
+    if (lastLeftResponse && lastRightResponse) break;
+  }
+
+  const lastEntry = transcript[transcript.length - 1];
+  let round = lastEntry ? lastEntry.round : 1;
+
+  try {
+    // If right needs to finish a partial round (left spoke, right didn't)
+    if (nextSpeaker === 'right') {
+      const isLastRound = roundLimit && round === roundLimit;
+
+      notifyArena({
+        type: MSG.DEBATE_UPDATE,
+        round,
+        phase: 'right_thinking',
+        leftLLM,
+        rightLLM,
+        leftResponse: lastLeftResponse,
+        roundLimit,
+      });
+
+      await sendToFrame(tabId, rightFrameId, {
+        type: 'SEND_MESSAGE',
+        text: makeFollowupPrompt(topic, lastLeftResponse, round, mode, rightPersonality, isLastRound, setting, autoEnd),
+      });
+
+      const rightR = await sendToFrame(tabId, rightFrameId, { type: 'WAIT_FOR_RESPONSE' });
+      lastRightResponse = rightR.response;
+
+      const rightHasSignal = autoEnd && hasAutoEndSignal(lastRightResponse);
+      if (rightHasSignal) lastRightResponse = stripAutoEndSignal(lastRightResponse);
+
+      debateState.transcript.push({ round, speaker: rightLLM, text: lastRightResponse });
+      await persistState();
+
+      notifyArena({
+        type: MSG.DEBATE_UPDATE,
+        round,
+        phase: 'complete',
+        leftLLM,
+        rightLLM,
+        leftResponse: lastLeftResponse,
+        rightResponse: lastRightResponse,
+        roundLimit,
+      });
+
+      if (rightHasSignal) {
+        debateState.status = 'completed';
+        debateState.nextSpeaker = 'left';
+        await persistState();
+        stopKeepAlive();
+        notifyArena({ type: MSG.DEBATE_COMPLETE, transcript: debateState.transcript, reason: 'natural_end' });
+        return;
+      }
+
+      if (debateState.status !== 'debating') {
+        const reason = (debateState.status === 'stopped') ? 'stopped' : 'round_limit';
+        debateState.status = 'completed';
+        await persistState();
+        stopKeepAlive();
+        notifyArena({ type: MSG.DEBATE_COMPLETE, transcript: debateState.transcript, reason });
+        return;
+      }
+
+      round++;
+    } else {
+      // nextSpeaker is 'left', start a new round
+      round++;
+    }
+
+    // Main round loop (same structure as runDebate)
+    for (; debateState.status === 'debating'; round++) {
+      if (roundLimit && round > roundLimit) break;
+
+      debateState.currentRound = round;
+      await persistState();
+      const isLastRound = roundLimit && round === roundLimit;
+
+      // Left LLM responds
+      notifyArena({
+        type: MSG.DEBATE_UPDATE,
+        round,
+        phase: 'left_thinking',
+        leftLLM,
+        rightLLM,
+        roundLimit,
+      });
+
+      await sendToFrame(tabId, leftFrameId, {
+        type: 'SEND_MESSAGE',
+        text: makeFollowupPrompt(topic, lastRightResponse, round, mode, leftPersonality, isLastRound, setting, autoEnd),
+      });
+
+      const leftR = await sendToFrame(tabId, leftFrameId, { type: 'WAIT_FOR_RESPONSE' });
+      lastLeftResponse = leftR.response;
+
+      const leftHasSignal = autoEnd && hasAutoEndSignal(lastLeftResponse);
+      if (leftHasSignal) lastLeftResponse = stripAutoEndSignal(lastLeftResponse);
+
+      debateState.transcript.push({ round, speaker: leftLLM, text: lastLeftResponse });
+      await persistState();
+
+      if (leftHasSignal) {
+        debateState.status = 'completed';
+        debateState.nextSpeaker = 'right';
+        await persistState();
+        stopKeepAlive();
+        notifyArena({
+          type: MSG.DEBATE_COMPLETE,
+          transcript: debateState.transcript,
+          reason: 'natural_end',
+          partialTurn: { round, speaker: leftLLM, text: lastLeftResponse },
+        });
+        return;
+      }
+
+      if (debateState.status !== 'debating') break;
+
+      // Right LLM responds
+      notifyArena({
+        type: MSG.DEBATE_UPDATE,
+        round,
+        phase: 'right_thinking',
+        leftLLM,
+        rightLLM,
+        leftResponse: lastLeftResponse,
+        roundLimit,
+      });
+
+      await sendToFrame(tabId, rightFrameId, {
+        type: 'SEND_MESSAGE',
+        text: makeFollowupPrompt(topic, lastLeftResponse, round, mode, rightPersonality, isLastRound, setting, autoEnd),
+      });
+
+      const rightR = await sendToFrame(tabId, rightFrameId, { type: 'WAIT_FOR_RESPONSE' });
+      lastRightResponse = rightR.response;
+
+      const rightHasSignal = autoEnd && hasAutoEndSignal(lastRightResponse);
+      if (rightHasSignal) lastRightResponse = stripAutoEndSignal(lastRightResponse);
+
+      debateState.transcript.push({ round, speaker: rightLLM, text: lastRightResponse });
+      await persistState();
+
+      notifyArena({
+        type: MSG.DEBATE_UPDATE,
+        round,
+        phase: 'complete',
+        leftLLM,
+        rightLLM,
+        leftResponse: lastLeftResponse,
+        rightResponse: lastRightResponse,
+        roundLimit,
+      });
+
+      if (rightHasSignal) {
+        debateState.status = 'completed';
+        debateState.nextSpeaker = 'left';
+        await persistState();
+        stopKeepAlive();
+        notifyArena({ type: MSG.DEBATE_COMPLETE, transcript: debateState.transcript, reason: 'natural_end' });
+        return;
+      }
+    }
+
+    // Round limit reached or stopped
+    const reason = (debateState.status === 'stopped') ? 'stopped' : 'round_limit';
+    debateState.status = 'completed';
+    await persistState();
+    stopKeepAlive();
+    notifyArena({ type: MSG.DEBATE_COMPLETE, transcript: debateState.transcript, reason });
+  } catch (err) {
+    console.error('[Clash SW] runDebateContinued error:', err.message, err.stack);
     debateState.status = 'error';
     await persistState();
     stopKeepAlive();
