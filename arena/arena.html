@@ -1,0 +1,150 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Clash of LLMs</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="arena.css">
+</head>
+<body>
+  <!-- Landing Page -->
+  <section id="landing">
+    <div class="landing-content">
+      <div class="landing-brand">
+        <svg class="landing-icon" width="56" height="56" viewBox="0 0 24 24" fill="none">
+          <path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z" fill="url(#bolt-grad-lg)" />
+          <defs><linearGradient id="bolt-grad-lg" x1="3" y1="2" x2="20" y2="22">
+            <stop stop-color="#f97316"/><stop offset="1" stop-color="#ec4899"/>
+          </linearGradient></defs>
+        </svg>
+        <h1 class="landing-title">Clash<span class="landing-title-dim"> of </span>LLMs</h1>
+        <p class="landing-subtitle">Watch AI chatbots debate each other in real-time</p>
+      </div>
+
+      <div class="landing-matchup">
+        <div class="selector-wrap">
+          <select id="left-select">
+            <option value="chatgpt" selected>ChatGPT</option>
+            <option value="claude">Claude</option>
+            <option value="grok">Grok</option>
+            <option value="gemini">Gemini</option>
+            <option value="perplexity">Perplexity</option>
+          </select>
+          <select id="left-model-select" class="model-select" disabled>
+            <option value="">Default Model</option>
+          </select>
+          <span class="model-loading" id="left-model-loading">Loading models...</span>
+        </div>
+        <div class="vs-badge">VS</div>
+        <div class="selector-wrap">
+          <select id="right-select">
+            <option value="chatgpt">ChatGPT</option>
+            <option value="claude" selected>Claude</option>
+            <option value="grok">Grok</option>
+            <option value="gemini">Gemini</option>
+            <option value="perplexity">Perplexity</option>
+          </select>
+          <select id="right-model-select" class="model-select" disabled>
+            <option value="">Default Model</option>
+          </select>
+          <span class="model-loading" id="right-model-loading">Loading models...</span>
+        </div>
+      </div>
+
+      <div class="landing-round-limit">
+        <label for="round-limit">Rounds</label>
+        <input type="number" id="round-limit" min="1" max="50" placeholder="Unlimited" />
+      </div>
+
+      <div class="landing-input-wrap">
+        <textarea id="topic-input" rows="2" placeholder="What should they debate?"></textarea>
+      </div>
+
+      <button id="start-btn" class="btn-start">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none">
+          <path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z" fill="currentColor"/>
+        </svg>
+        Start Debate
+      </button>
+
+      <p class="landing-hint">or press Enter</p>
+    </div>
+  </section>
+
+  <!-- Debate View -->
+  <section id="debate-view">
+    <header id="controls">
+      <div class="header-section header-left">
+        <div class="logo-group">
+          <svg class="logo-icon" width="20" height="20" viewBox="0 0 24 24" fill="none">
+            <path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z" fill="url(#bolt-grad)" />
+            <defs><linearGradient id="bolt-grad" x1="3" y1="2" x2="20" y2="22">
+              <stop stop-color="#f97316"/><stop offset="1" stop-color="#ec4899"/>
+            </linearGradient></defs>
+          </svg>
+          <span class="logo">Clash<span class="logo-dim"> of </span>LLMs</span>
+        </div>
+      </div>
+
+      <div class="header-section header-center">
+        <div class="matchup-display">
+          <span class="matchup-name" id="header-left-name">ChatGPT</span>
+          <span class="matchup-vs">VS</span>
+          <span class="matchup-name" id="header-right-name">Claude</span>
+        </div>
+      </div>
+
+      <div class="header-section header-right">
+        <div class="status-pill" id="status-pill">
+          <span class="status-dot"></span>
+          <span id="status-text">Starting...</span>
+          <span id="round-counter"></span>
+        </div>
+        <button id="stop-btn" class="btn-stop">Stop</button>
+        <button id="export-btn" class="btn-export" disabled title="Export debate transcript as PDF">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+          PDF
+        </button>
+        <button id="new-debate-btn" class="btn-new-debate" style="display:none">New Debate</button>
+      </div>
+    </header>
+
+    <main id="arena">
+      <div class="pane" id="left-pane">
+        <div class="pane-header">
+          <span class="pane-label" id="left-label">ChatGPT</span>
+          <span class="pane-status" id="left-status"></span>
+        </div>
+        <iframe id="left-iframe" src="about:blank"></iframe>
+      </div>
+
+      <div class="divider" id="divider">
+        <div class="divider-grip"></div>
+      </div>
+
+      <div class="pane" id="right-pane">
+        <div class="pane-header">
+          <span class="pane-label" id="right-label">Claude</span>
+          <span class="pane-status" id="right-status"></span>
+        </div>
+        <iframe id="right-iframe" src="about:blank"></iframe>
+      </div>
+    </main>
+
+    <aside id="transcript-panel" class="collapsed">
+      <button id="toggle-transcript">
+        <svg class="chevron-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="18 15 12 9 6 15"/></svg>
+        <span>Show Transcript</span>
+      </button>
+      <div id="transcript-content"></div>
+    </aside>
+  </section>
+
+  <script src="lib/jspdf.umd.min.js"></script>
+  <script src="../shared/constants.js"></script>
+  <script src="arena.js"></script>
+</body>
+</html>

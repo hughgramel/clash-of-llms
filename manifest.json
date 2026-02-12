@@ -1,0 +1,116 @@
+{
+  "manifest_version": 3,
+  "name": "Clash of LLMs",
+  "description": "Debate arena that pits LLM chatbots against each other in real-time",
+  "version": "1.0.0",
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "action": {
+    "default_popup": "popup/popup.html",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+  "permissions": [
+    "tabs",
+    "storage",
+    "scripting",
+    "webNavigation",
+    "declarativeNetRequest",
+    "declarativeNetRequestFeedback",
+    "alarms"
+  ],
+  "host_permissions": [
+    "https://chatgpt.com/*",
+    "https://claude.ai/*",
+    "https://*.claude.ai/*",
+    "https://grok.com/*",
+    "https://gemini.google.com/*",
+    "https://www.perplexity.ai/*"
+  ],
+  "background": {
+    "service_worker": "background/service-worker.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://chatgpt.com/*"],
+      "js": ["content-scripts/anti-framebusting.js"],
+      "run_at": "document_start",
+      "all_frames": true
+    },
+    {
+      "matches": ["https://claude.ai/*", "https://*.claude.ai/*"],
+      "js": ["content-scripts/anti-framebusting.js"],
+      "run_at": "document_start",
+      "all_frames": true
+    },
+    {
+      "matches": ["https://grok.com/*"],
+      "js": ["content-scripts/anti-framebusting.js"],
+      "run_at": "document_start",
+      "all_frames": true
+    },
+    {
+      "matches": ["https://gemini.google.com/*"],
+      "js": ["content-scripts/anti-framebusting.js"],
+      "run_at": "document_start",
+      "all_frames": true
+    },
+    {
+      "matches": ["https://www.perplexity.ai/*"],
+      "js": ["content-scripts/anti-framebusting.js"],
+      "run_at": "document_start",
+      "all_frames": true
+    },
+    {
+      "matches": ["https://chatgpt.com/*"],
+      "js": ["shared/constants.js", "content-scripts/adapter-interface.js", "content-scripts/chatgpt-adapter.js"],
+      "run_at": "document_idle",
+      "all_frames": true
+    },
+    {
+      "matches": ["https://claude.ai/*", "https://*.claude.ai/*"],
+      "js": ["shared/constants.js", "content-scripts/adapter-interface.js", "content-scripts/claude-adapter.js"],
+      "run_at": "document_idle",
+      "all_frames": true
+    },
+    {
+      "matches": ["https://grok.com/*"],
+      "js": ["shared/constants.js", "content-scripts/adapter-interface.js", "content-scripts/grok-adapter.js"],
+      "run_at": "document_idle",
+      "all_frames": true
+    },
+    {
+      "matches": ["https://gemini.google.com/*"],
+      "js": ["shared/constants.js", "content-scripts/adapter-interface.js", "content-scripts/gemini-adapter.js"],
+      "run_at": "document_idle",
+      "all_frames": true
+    },
+    {
+      "matches": ["https://www.perplexity.ai/*"],
+      "js": ["shared/constants.js", "content-scripts/adapter-interface.js", "content-scripts/perplexity-adapter.js"],
+      "run_at": "document_idle",
+      "all_frames": true
+    }
+  ],
+  "declarative_net_request": {
+    "rule_resources": [
+      {
+        "id": "strip_headers",
+        "enabled": true,
+        "path": "rules/strip-headers.json"
+      }
+    ]
+  },
+  "web_accessible_resources": [
+    {
+      "resources": ["arena/arena.html", "arena/lib/jspdf.umd.min.js"],
+      "matches": ["<all_urls>"]
+    }
+  ]
+}

@@ -1,0 +1,17 @@
+{
+  "name": "clash-of-llms",
+  "version": "1.0.0",
+  "description": "LLM Debate Arena Chrome Extension",
+  "type": "module",
+  "scripts": {
+    "test": "npx playwright test",
+    "test:headed": "npx playwright test --headed",
+    "test:ui": "npx playwright test --ui"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.50.0"
+  },
+  "dependencies": {
+    "jspdf": "^4.1.0"
+  }
+}
